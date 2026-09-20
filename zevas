@@ -1,4 +1,4 @@
---[ V6 - ZEVA titit besar ]--
+--[ V6 xeva ]--
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
 local TS  = game:GetService("TweenService")
@@ -284,10 +284,10 @@ function StartScript(plf)
         MenuSound = true,
         AccentColor = Color3.fromRGB(140,190,255),
 
-        -- FOV Shape
         FovShape = "Circle",
+        AimPriority = "Crosshair",
+        SmoothCurve = "Linear",
 
-        -- Crosshair
         Crosshair = false,
         CrosshairStyle = "Cross",
         CrosshairSize = 12,
@@ -295,17 +295,27 @@ function StartScript(plf)
         CrosshairThickness = 1,
         CrosshairColor = Color3.fromRGB(0,255,0),
 
-        -- NEW: Aim Priority
-        AimPriority = "Crosshair",
-
-        -- NEW: Smooth Curve
-        SmoothCurve = "Linear",
-
-        -- NEW: Kill Stats
         KillStats = false,
-
-        -- NEW: Sound Pack
+        KillFeed = false,
         SoundPack = "Default",
+
+        BoxColor = Color3.fromRGB(255,255,255),
+        BoneColor = Color3.fromRGB(255,255,255),
+        HealthColor = Color3.fromRGB(0,255,0),
+        DistanceColor = Color3.fromRGB(255,255,255),
+        TracerColor = Color3.fromRGB(255,255,255),
+        LookTracerColor = Color3.fromRGB(255,0,0),
+        BoxThickness = 1,
+        BoneThickness = 1,
+        HealthThickness = 3,
+        TracerThickness = 1,
+        LookTracerThickness = 1,
+        ESPFilled = false,
+        ESPFontSize = 12,
+
+        Radar = false,
+        RadarSize = 140,
+        RadarRange = 200,
     }
 
     local FEATURE_INDEX = {}
@@ -332,7 +342,6 @@ function StartScript(plf)
         end
     end
 
-    -- FOV: three Drawing object
     local fC, fS, fT
     pcall(function()
         fC = Drawing.new("Circle")
@@ -381,6 +390,7 @@ function StartScript(plf)
     local lastHealth = {}
     local crosshairParts = {}
     local killStats = { hits = 0 }
+    local killFeed = {}
 
     local function curveAlpha(t)
         t = math.clamp(t, 0, 1)
@@ -391,6 +401,19 @@ function StartScript(plf)
         end
         return t
     end
+
+    local ESP_PRESETS = {
+        Color3.fromRGB(255,255,255),
+        Color3.fromRGB(255,60,60),
+        Color3.fromRGB(255,150,60),
+        Color3.fromRGB(255,230,60),
+        Color3.fromRGB(80,220,120),
+        Color3.fromRGB(80,200,255),
+        Color3.fromRGB(120,140,255),
+        Color3.fromRGB(200,120,255),
+        Color3.fromRGB(255,120,200),
+        Color3.fromRGB(20,20,20),
+    }
 
     local isPC = (plf == "PC")
     local W, H = isPC and 780 or 620, isPC and 480 or 400
@@ -429,7 +452,7 @@ function StartScript(plf)
 
     local subText = Instance.new("TextLabel", title)
     subText.Size = UDim2.new(0, 240, 1, 0); subText.Position = UDim2.new(0, 80, 0, 0)
-    subText.BackgroundTransparency = 1; subText.Text = "/  v6.2c"
+    subText.BackgroundTransparency = 1; subText.Text = "/  v6.2e"
     subText.TextColor3 = TH.TextMute; subText.Font = FONT; subText.TextSize = 11
     subText.TextXAlignment = Enum.TextXAlignment.Left
     subText.Visible = isPC
@@ -740,6 +763,7 @@ function StartScript(plf)
         return { set = function(v) value = v; redraw(); cb(v) end, get = function() return value end }
     end
 
+    -- FIXED: numInput now writes back to cfg so render loop picks it up
     local function numInput(parent, label, cfgKey, default, cb)
         local r = row(parent, 28)
         local lbl = Instance.new("TextLabel", r)
@@ -759,8 +783,13 @@ function StartScript(plf)
 
         box.FocusLost:Connect(function()
             local n = tonumber(box.Text)
-            if n then box.Text = tostring(n); if cb then cb(n) end
-            else box.Text = tostring(cfg[cfgKey]) end
+            if n then
+                box.Text = tostring(n)
+                cfg[cfgKey] = n
+                if cb then cb(n) end
+            else
+                box.Text = tostring(cfg[cfgKey])
+            end
         end)
 
         regRefresh(cfgKey, function()
@@ -847,6 +876,32 @@ function StartScript(plf)
         regRefresh(cfgKey, function() b.Text = keyName(cfg[cfgKey]) end)
         regFeature(label, BUILD_PAGE, r)
         return b
+    end
+
+    local function colorRow(parent, label, cfgKey)
+        local r = row(parent, 28)
+        local lbl = Instance.new("TextLabel", r)
+        lbl.Size = UDim2.new(1, -40, 1, 0); lbl.BackgroundTransparency = 1
+        lbl.Text = label; lbl.TextColor3 = TH.Text; lbl.Font = FONT; lbl.TextSize = 12
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+        local swatch = Instance.new("TextButton", r)
+        swatch.Size = UDim2.new(0, 28, 0, 20); swatch.Position = UDim2.new(1, -28, 0.5, -10)
+        swatch.BackgroundColor3 = cfg[cfgKey]
+        swatch.Text = ""; swatch.AutoButtonColor = false; swatch.BorderSizePixel = 0
+        round(swatch, 4); stroke(swatch, TH.LineSoft, 1, 0.4)
+
+        local idx = 1
+        for i, col in ipairs(ESP_PRESETS) do
+            if col == cfg[cfgKey] then idx = i; break end
+        end
+        swatch.MouseButton1Click:Connect(function()
+            idx = idx % #ESP_PRESETS + 1
+            cfg[cfgKey] = ESP_PRESETS[idx]
+            swatch.BackgroundColor3 = cfg[cfgKey]
+        end)
+        regFeature(label, "ESP", r)
+        return swatch
     end
 
     do
@@ -938,7 +993,6 @@ function StartScript(plf)
         slider(s2, "Offset X", "OffsetX", -5, 5, 0, function(v) cfg.OffsetX = v end)
         slider(s2, "Offset Y", "OffsetY", -5, 5, 0, function(v) cfg.OffsetY = v end)
 
-        -- NEW: Aim Priority picker
         local s3 = section(pages["Aim"], "priority")
         local prRow = Instance.new("Frame", s3)
         prRow.Size = UDim2.new(1, 0, 0, 28); prRow.BackgroundTransparency = 1
@@ -963,7 +1017,6 @@ function StartScript(plf)
         end)
         regFeature("Aim Priority", "Aim", prRow)
 
-        -- NEW: Smooth Curve picker
         local s4 = section(pages["Aim"], "smoothing")
         local scRow = Instance.new("Frame", s4)
         scRow.Size = UDim2.new(1, 0, 0, 28); scRow.BackgroundTransparency = 1
@@ -988,7 +1041,6 @@ function StartScript(plf)
         end)
         regFeature("Smooth Curve", "Aim", scRow)
 
-        -- FOV shape picker
         local s5 = section(pages["Aim"], "fov shape")
         local shapeRow = Instance.new("Frame", s5)
         shapeRow.Size = UDim2.new(1, 0, 0, 28); shapeRow.BackgroundTransparency = 1
@@ -1028,6 +1080,20 @@ function StartScript(plf)
         local s2 = section(pages["ESP"], "filters")
         toggle(s2, "Team Check", "TeamCheck", false, function(v) cfg.TeamCheck = v end)
         toggle(s2, "Show FOV", "ShowFov", false, function(v) cfg.ShowFov = v end)
+
+        local s3 = section(pages["ESP"], "customization")
+        toggle(s3, "Filled Box", "ESPFilled", false)
+        colorRow(s3, "Box Color", "BoxColor")
+        colorRow(s3, "Bone Color", "BoneColor")
+        colorRow(s3, "Health Color", "HealthColor")
+        colorRow(s3, "Distance Color", "DistanceColor")
+        colorRow(s3, "Tracer Color", "TracerColor")
+        colorRow(s3, "LookTracer Color", "LookTracerColor")
+        numInput(s3, "Box Thickness", "BoxThickness", 1)
+        numInput(s3, "Bone Thickness", "BoneThickness", 1)
+        numInput(s3, "Health Thickness", "HealthThickness", 3)
+        numInput(s3, "Tracer Thickness", "TracerThickness", 1)
+        numInput(s3, "Font Size", "ESPFontSize", 12)
     end
 
     do
@@ -1291,7 +1357,6 @@ function StartScript(plf)
         local s4 = section(pages["Settings"], "audio")
         toggle(s4, "Menu Sound", "MenuSound", true, function(v) cfg.MenuSound = v end)
 
-        -- NEW: Sound Pack picker
         local spRow = Instance.new("Frame", s4)
         spRow.Size = UDim2.new(1, 0, 0, 28); spRow.BackgroundTransparency = 1
         local spLbl = Instance.new("TextLabel", spRow)
@@ -1322,7 +1387,6 @@ function StartScript(plf)
         end)
         regFeature("Sound Pack", "Settings", spRow)
 
-        -- Crosshair section
         local s5 = section(pages["Settings"], "crosshair")
         toggle(s5, "Custom Crosshair", "Crosshair", false, function(v)
             cfg.Crosshair = v
@@ -1354,14 +1418,18 @@ function StartScript(plf)
         numInput(s5, "Gap", "CrosshairGap", 4, function(v) cfg.CrosshairGap = v; buildCrosshair() end)
         numInput(s5, "Thickness", "CrosshairThickness", 1, function(v) cfg.CrosshairThickness = v; buildCrosshair() end)
 
-        -- NEW: Kill Stats toggle
-        local s6 = section(pages["Settings"], "overlay")
+        local s6 = section(pages["Settings"], "overlays")
         toggle(s6, "Kill Stats Overlay", "KillStats", false, function(v) cfg.KillStats = v end)
+        toggle(s6, "Kill Feed", "KillFeed", false, function(v) cfg.KillFeed = v end)
 
-        -- Danger zone
-        local s7 = section(pages["Settings"], "danger zone")
+        local s7 = section(pages["Settings"], "radar")
+        toggle(s7, "Radar / Minimap", "Radar", false, function(v) cfg.Radar = v end)
+        numInput(s7, "Size", "RadarSize", 140)
+        numInput(s7, "Range", "RadarRange", 200)
 
-        local changeDeviceBtn = Instance.new("TextButton", s7)
+        local s8 = section(pages["Settings"], "danger zone")
+
+        local changeDeviceBtn = Instance.new("TextButton", s8)
         changeDeviceBtn.Size = UDim2.new(1, 0, 0, 32)
         changeDeviceBtn.BackgroundColor3 = TH.Accent
         changeDeviceBtn.BackgroundTransparency = 0.15
@@ -1381,7 +1449,7 @@ function StartScript(plf)
             tw(changeDeviceBtn, 0.14, { BackgroundTransparency = 0.15, BackgroundColor3 = TH.Accent })
         end)
 
-        local destroyBtn = Instance.new("TextButton", s7)
+        local destroyBtn = Instance.new("TextButton", s8)
         destroyBtn.Size = UDim2.new(1, 0, 0, 32)
         destroyBtn.BackgroundColor3 = TH.Danger
         destroyBtn.BackgroundTransparency = 0.15
@@ -1412,6 +1480,14 @@ function StartScript(plf)
             if _G.__zeva_killStatsGui then
                 pcall(function() _G.__zeva_killStatsGui.sg:Destroy() end)
                 _G.__zeva_killStatsGui = nil
+            end
+            if _G.__zeva_killFeedGui then
+                pcall(function() _G.__zeva_killFeedGui.sg:Destroy() end)
+                _G.__zeva_killFeedGui = nil
+            end
+            if _G.__zeva_radarGui then
+                pcall(function() _G.__zeva_radarGui.sg:Destroy() end)
+                _G.__zeva_radarGui = nil
             end
             pcall(function() g:Destroy() end)
         end
@@ -1590,15 +1666,15 @@ function StartScript(plf)
             L={}, B=Drawing.new("Square"), HB=Drawing.new("Line"), HM=Drawing.new("Line"),
             D=Drawing.new("Text"), T=Drawing.new("Line"), LT=Drawing.new("Line"),
         }
-        d.B.Thickness, d.B.Color, d.B.Filled = 1, Color3.new(1,1,1), false
-        d.HB.Thickness, d.HB.Color = 3, Color3.new(0,0,0)
-        d.HM.Thickness = 2
-        d.D.Size, d.D.Center, d.D.Color = 12, true, Color3.new(1,1,1)
-        d.T.Thickness, d.T.Color = 1, Color3.new(1,1,1)
-        d.LT.Thickness, d.LT.Color = 1, Color3.new(1,0,0)
+        if d.B then d.B.Thickness, d.B.Color, d.B.Filled = cfg.BoxThickness, cfg.BoxColor, cfg.ESPFilled end
+        if d.HB then d.HB.Thickness, d.HB.Color = cfg.HealthThickness, cfg.HealthColor end
+        if d.HM then d.HM.Thickness = cfg.HealthThickness end
+        if d.D then d.D.Size, d.D.Center, d.D.Color = cfg.ESPFontSize, true, cfg.DistanceColor end
+        if d.T then d.T.Thickness, d.T.Color = cfg.TracerThickness, cfg.TracerColor end
+        if d.LT then d.LT.Thickness, d.LT.Color = cfg.LookTracerThickness, cfg.LookTracerColor end
         dr[pl] = d
         for i = 1, 30 do
-            local l = Drawing.new("Line"); l.Thickness, l.Color = 1, Color3.new(1,1,1)
+            local l = Drawing.new("Line"); l.Thickness, l.Color = cfg.BoneThickness, cfg.BoneColor
             table.insert(d.L, l)
         end
     end
@@ -1708,7 +1784,6 @@ function StartScript(plf)
     end
     buildCrosshair()
 
-    -- NEW: aim priority scorer
     local function scoreTarget(pl, part, camPos, screenCenter)
         if cfg.AimPriority == "Closest" then
             return (part.Position - camPos).Magnitude
@@ -1724,6 +1799,10 @@ function StartScript(plf)
         return (Vector2.new(sp.X, sp.Y) - screenCenter).Magnitude
     end
 
+    local function pushKillFeed(pl)
+        table.insert(killFeed, { name = pl.DisplayName, born = tick() })
+    end
+
     local currentAimPos = nil
     RS:BindToRenderStep(bindName, 200, function()
         if not cfg.Aim or not currentAimPos then return end
@@ -1737,7 +1816,6 @@ function StartScript(plf)
         local camPos = c.CFrame.Position
         local screenCenter = c.ViewportSize / 2
 
-        -- FOV shape-aware visibility
         if fC then pcall(function()
             fC.Radius = cfg.FovSize
             fC.Position = c.ViewportSize/2
@@ -1756,7 +1834,6 @@ function StartScript(plf)
             fT.Visible = cfg.ShowFov and cfg.FovShape == "Triangle"
         end) end
 
-        -- crosshair recenter
         if #crosshairParts > 0 then
             local vs = c.ViewportSize
             local cx, cy = vs.X/2, vs.Y/2
@@ -1786,6 +1863,9 @@ function StartScript(plf)
                     local hp = hum.Health
                     if not lastHealth[pl] then lastHealth[pl] = hp end
                     if cfg.Chams and hp < lastHealth[pl] and hp > 0 then pushCham(pl) end
+                    if cfg.KillFeed and lastHealth[pl] > 0 and hp <= 0 then
+                        pushKillFeed(pl)
+                    end
                     lastHealth[pl] = hp
                 end
             end
@@ -1805,37 +1885,58 @@ function StartScript(plf)
                         local bS = c:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
                         local ht = math.abs(bS.Y - tS.Y); local wd = ht / 1.6
 
-                        if cfg.Box then
-                            d.B.Visible, d.B.Size, d.B.Position = true, Vector2.new(wd, ht), Vector2.new(ps.X - wd/2, tS.Y)
-                        else d.B.Visible = false end
+                        if d.B then
+                            if cfg.Box then
+                                d.B.Visible, d.B.Size, d.B.Position = true, Vector2.new(wd, ht), Vector2.new(ps.X - wd/2, tS.Y)
+                                d.B.Color = cfg.BoxColor
+                                d.B.Thickness = cfg.BoxThickness
+                                d.B.Filled = cfg.ESPFilled
+                            else d.B.Visible = false end
+                        end
 
-                        if cfg.Health then
-                            local bX = ps.X - wd/2 - 6
-                            d.HB.Visible, d.HB.From, d.HB.To = true, Vector2.new(bX, tS.Y), Vector2.new(bX, tS.Y + ht)
-                            local ratio = hum.Health / hum.MaxHealth
-                            d.HM.Visible, d.HM.From, d.HM.To, d.HM.Color =
-                                true, Vector2.new(bX, tS.Y + ht), Vector2.new(bX, tS.Y + ht - (ht * ratio)),
-                                Color3.fromHSV(ratio * .3, 1, 1)
-                        else d.HB.Visible, d.HM.Visible = false, false end
+                        if d.HB and d.HM then
+                            if cfg.Health then
+                                local bX = ps.X - wd/2 - 6
+                                d.HB.Visible, d.HB.From, d.HB.To = true, Vector2.new(bX, tS.Y), Vector2.new(bX, tS.Y + ht)
+                                d.HB.Color = cfg.HealthColor
+                                d.HB.Thickness = cfg.HealthThickness
+                                local ratio = hum.Health / hum.MaxHealth
+                                d.HM.Visible, d.HM.From, d.HM.To, d.HM.Color =
+                                    true, Vector2.new(bX, tS.Y + ht), Vector2.new(bX, tS.Y + ht - (ht * ratio)),
+                                    Color3.fromHSV(ratio * .3, 1, 1)
+                                d.HM.Thickness = cfg.HealthThickness
+                            else d.HB.Visible, d.HM.Visible = false, false end
+                        end
 
-                        if cfg.Dist then
-                            d.D.Visible, d.D.Text, d.D.Position = true, math.floor(dist).."m", Vector2.new(ps.X, tS.Y + ht + 2)
-                        else d.D.Visible = false end
+                        if d.D then
+                            if cfg.Dist then
+                                d.D.Visible, d.D.Text, d.D.Position = true, math.floor(dist).."m", Vector2.new(ps.X, tS.Y + ht + 2)
+                                d.D.Color = cfg.DistanceColor
+                                d.D.Size = cfg.ESPFontSize
+                            else d.D.Visible = false end
+                        end
 
-                        if cfg.Tracer then
-                            d.T.Visible, d.T.From, d.T.To = true, Vector2.new(c.ViewportSize.X/2, 0), Vector2.new(ps.X, ps.Y)
-                        else d.T.Visible = false end
+                        if d.T then
+                            if cfg.Tracer then
+                                d.T.Visible, d.T.From, d.T.To = true, Vector2.new(c.ViewportSize.X/2, 0), Vector2.new(ps.X, ps.Y)
+                                d.T.Color = cfg.TracerColor
+                                d.T.Thickness = cfg.TracerThickness
+                            else d.T.Visible = false end
+                        end
 
-                        if cfg.LookTracer and ch:FindFirstChild("Head") then
-                            local hp2, onS = c:WorldToViewportPoint(ch.Head.Position)
-                            local center = Vector2.new(c.ViewportSize.X/2, c.ViewportSize.Y/2)
-                            local dFC = (Vector2.new(hp2.X, hp2.Y) - center).Magnitude
-                            if onS and dFC <= cfg.FovSize then
-                                d.LT.Visible = true; d.LT.From = center
-                                d.LT.To = Vector2.new(hp2.X, hp2.Y)
-                                d.LT.Color = vis(ch.Head) and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,0,0)
+                        if d.LT then
+                            if cfg.LookTracer and ch:FindFirstChild("Head") then
+                                local hp2, onS = c:WorldToViewportPoint(ch.Head.Position)
+                                local center = Vector2.new(c.ViewportSize.X/2, c.ViewportSize.Y/2)
+                                local dFC = (Vector2.new(hp2.X, hp2.Y) - center).Magnitude
+                                if onS and dFC <= cfg.FovSize then
+                                    d.LT.Visible = true; d.LT.From = center
+                                    d.LT.To = Vector2.new(hp2.X, hp2.Y)
+                                    d.LT.Color = cfg.LookTracerColor
+                                    d.LT.Thickness = cfg.LookTracerThickness
+                                else d.LT.Visible = false end
                             else d.LT.Visible = false end
-                        else d.LT.Visible = false end
+                        end
 
                         if cfg.Bone then
                             local li = 1
@@ -1848,24 +1949,34 @@ function StartScript(plf)
                                         d.L[li].Visible = true
                                         d.L[li].From = Vector2.new(v1.X, v1.Y)
                                         d.L[li].To   = Vector2.new(v2.X, v2.Y)
+                                        d.L[li].Color = cfg.BoneColor
+                                        d.L[li].Thickness = cfg.BoneThickness
                                         li = li + 1
                                     end
                                 end
                             end
                             for i = li, 30 do if d.L[i] then d.L[i].Visible = false end end
                         else
-                            for _, l in pairs(d.L) do l.Visible = false end
+                            for _, l in pairs(d.L) do if l then l.Visible = false end end
                         end
                     else
-                        d.B.Visible, d.D.Visible, d.HB.Visible, d.HM.Visible, d.T.Visible, d.LT.Visible =
-                            false, false, false, false, false, false
-                        for _, l in pairs(d.L) do l.Visible = false end
+                        if d.B then d.B.Visible = false end
+                        if d.D then d.D.Visible = false end
+                        if d.HB then d.HB.Visible = false end
+                        if d.HM then d.HM.Visible = false end
+                        if d.T then d.T.Visible = false end
+                        if d.LT then d.LT.Visible = false end
+                        for _, l in pairs(d.L) do if l then l.Visible = false end end
                     end
                 end
             else
-                d.B.Visible, d.D.Visible, d.HB.Visible, d.HM.Visible, d.T.Visible, d.LT.Visible =
-                    false, false, false, false, false, false
-                for _, l in pairs(d.L) do l.Visible = false end
+                if d.B then d.B.Visible = false end
+                if d.D then d.D.Visible = false end
+                if d.HB then d.HB.Visible = false end
+                if d.HM then d.HM.Visible = false end
+                if d.T then d.T.Visible = false end
+                if d.LT then d.LT.Visible = false end
+                for _, l in pairs(d.L) do if l then l.Visible = false end end
             end
         end
 
@@ -1917,7 +2028,6 @@ function StartScript(plf)
             currentAimPos = nil
         end
 
-        -- NEW: Kill Stats overlay
         if cfg.KillStats then
             if not _G.__zeva_killStatsGui then
                 local sg = Instance.new("ScreenGui", p.PlayerGui)
@@ -1937,6 +2047,103 @@ function StartScript(plf)
             ks.sg.Enabled = true
         elseif _G.__zeva_killStatsGui then
             _G.__zeva_killStatsGui.sg.Enabled = false
+        end
+
+        local nowT = tick()
+        for i = #killFeed, 1, -1 do
+            if nowT - killFeed[i].born > 4 then table.remove(killFeed, i) end
+        end
+        if cfg.KillFeed then
+            if not _G.__zeva_killFeedGui then
+                local sg = Instance.new("ScreenGui", p.PlayerGui)
+                sg.Name = "zeva_kf_" .. tostring(math.random(1e6, 9e6))
+                sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true; sg.DisplayOrder = 40
+                local holder = Instance.new("Frame", sg)
+                holder.Size = UDim2.new(0, 260, 0, 200)
+                holder.Position = UDim2.new(1, -270, 1, -220)
+                holder.BackgroundTransparency = 1
+                local lay = Instance.new("UIListLayout", holder)
+                lay.SortOrder = Enum.SortOrder.LayoutOrder
+                lay.VerticalAlignment = Enum.VerticalAlignment.Bottom
+                lay.Padding = UDim.new(0, 4)
+                _G.__zeva_killFeedGui = { sg = sg, holder = holder }
+            end
+            local kf = _G.__zeva_killFeedGui
+            for _, ch in ipairs(kf.holder:GetChildren()) do
+                if ch:IsA("TextLabel") then ch:Destroy() end
+            end
+            for i, item in ipairs(killFeed) do
+                local lbl = Instance.new("TextLabel", kf.holder)
+                lbl.Size = UDim2.new(1, 0, 0, 22)
+                lbl.BackgroundColor3 = TH.Bg; lbl.BackgroundTransparency = 0.3
+                lbl.TextColor3 = TH.Text; lbl.Font = FONTB; lbl.TextSize = 11
+                lbl.Text = "×  " .. item.name
+                lbl.BorderSizePixel = 0
+                lbl.LayoutOrder = i
+                round(lbl, 4)
+            end
+            kf.sg.Enabled = true
+        elseif _G.__zeva_killFeedGui then
+            _G.__zeva_killFeedGui.sg.Enabled = false
+        end
+
+        if cfg.Radar then
+            if not _G.__zeva_radarGui then
+                local sg = Instance.new("ScreenGui", p.PlayerGui)
+                sg.Name = "zeva_radar_" .. tostring(math.random(1e6, 9e6))
+                sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true; sg.DisplayOrder = 40
+                local frame = Instance.new("Frame", sg)
+                frame.Size = UDim2.new(0, cfg.RadarSize, 0, cfg.RadarSize)
+                frame.Position = UDim2.new(0, 20, 0, 100)
+                frame.BackgroundColor3 = TH.Bg; frame.BackgroundTransparency = 0.35
+                frame.BorderSizePixel = 0
+                round(frame, 8); stroke(frame, TH.LineSoft, 1, 0.4)
+                local holder = Instance.new("Frame", frame)
+                holder.Size = UDim2.new(1, 0, 1, 0); holder.BackgroundTransparency = 1
+                _G.__zeva_radarGui = { sg = sg, frame = frame, holder = holder }
+            end
+            local rd = _G.__zeva_radarGui
+            rd.frame.Size = UDim2.new(0, cfg.RadarSize, 0, cfg.RadarSize)
+            for _, ch in ipairs(rd.holder:GetChildren()) do ch:Destroy() end
+
+            local cpos = c.CFrame.Position
+            local look = c.CFrame.LookVector
+            local yaw = math.atan2(look.X, look.Z)
+            local half = cfg.RadarSize / 2
+            local range = cfg.RadarRange
+
+            local selfDot = Instance.new("Frame", rd.holder)
+            selfDot.Size = UDim2.new(0, 6, 0, 6)
+            selfDot.Position = UDim2.new(0, half - 3, 0, half - 3)
+            selfDot.BackgroundColor3 = TH.Accent
+            selfDot.BorderSizePixel = 0
+            round(selfDot, 3)
+
+            for _, pl in pairs(P:GetPlayers()) do
+                if pl ~= p and v(pl) and pl.Character then
+                    local hrp = pl.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        local rel = hrp.Position - cpos
+                        local dx, dz = rel.X, rel.Z
+                        local rx = dx * math.cos(yaw) + dz * math.sin(yaw)
+                        local rz = -dx * math.sin(yaw) + dz * math.cos(yaw)
+                        local dist = math.sqrt(dx*dx + dz*dz)
+                        if dist < range then
+                            local sx = half + (rx / range) * half
+                            local sy = half - (rz / range) * half
+                            local dot = Instance.new("Frame", rd.holder)
+                            dot.Size = UDim2.new(0, 6, 0, 6)
+                            dot.Position = UDim2.new(0, sx - 3, 0, sy - 3)
+                            dot.BackgroundColor3 = TH.Danger
+                            dot.BorderSizePixel = 0
+                            round(dot, 3)
+                        end
+                    end
+                end
+            end
+            rd.sg.Enabled = true
+        elseif _G.__zeva_radarGui then
+            _G.__zeva_radarGui.sg.Enabled = false
         end
     end)
 
@@ -1980,10 +2187,13 @@ function StartScript(plf)
     P.PlayerRemoving:Connect(function(pl)
         local d = dr[pl]
         if d then
-            pcall(function() d.B:Remove() end); pcall(function() d.HB:Remove() end)
-            pcall(function() d.HM:Remove() end); pcall(function() d.D:Remove() end)
-            pcall(function() d.T:Remove() end); pcall(function() d.LT:Remove() end)
-            for _, l in pairs(d.L) do pcall(function() l:Remove() end) end
+            pcall(function() if d.B then d.B:Remove() end end)
+            pcall(function() if d.HB then d.HB:Remove() end end)
+            pcall(function() if d.HM then d.HM:Remove() end end)
+            pcall(function() if d.D then d.D:Remove() end end)
+            pcall(function() if d.T then d.T:Remove() end end)
+            pcall(function() if d.LT then d.LT:Remove() end end)
+            for _, l in pairs(d.L) do pcall(function() if l then l:Remove() end end) end
             dr[pl] = nil
         end
         local hc = hitChams[pl]
