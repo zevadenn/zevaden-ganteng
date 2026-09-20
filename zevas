@@ -1,4 +1,4 @@
---[ V6.2C - ZEVA + CHANGE DEVICE + 6 FEATURES ]--
+--[ V6 - ZEVA titit besar ]--
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
 local TS  = game:GetService("TweenService")
@@ -332,7 +332,7 @@ function StartScript(plf)
         end
     end
 
-    -- FOV: three Drawing objects, one per shape
+    -- FOV: three Drawing object
     local fC, fS, fT
     pcall(function()
         fC = Drawing.new("Circle")
