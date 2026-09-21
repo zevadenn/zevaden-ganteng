@@ -1,4 +1,4 @@
---[ V6 xeva + ANTI-AIM + AUTO BHOP/WALLHOP + RADAR + PERF ]--
+--[ V6 xeva + ANTI-AIM + AUTO BHOP/WALLHOP + RADAR + PERF + FREECAM ]--
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
 local TS  = game:GetService("TweenService")
@@ -328,7 +328,6 @@ function StartScript(plf)
         WallHop = false,
         WallHopPower = 50,
 
-        -- NEW
         FPSBooster = false,
         FPSOverlay = false,
         FreeCam = false,
@@ -418,7 +417,6 @@ function StartScript(plf)
     local lastHop = 0
     local lastJumpFire = 0
 
-    -- FPS Booster
     local fpsStripped = false
     local function applyFPSBooster()
         pcall(function()
@@ -447,18 +445,35 @@ function StartScript(plf)
     -- Free Cam
     local fcCFrame = nil
     local fcKeys = {W=false, A=false, S=false, D=false, Q=false, E=false}
-    local fcMouseLocked = false
-    local fcLastMouse = nil
+    local fcControlsDisabled = false
 
     local function fcStart()
         local char = p.Character
         if not char then return end
         fcCFrame = c.CFrame
         c.CameraType = Enum.CameraType.Scriptable
+        c.CameraSubject = nil
+
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum then
-            c.CameraSubject = nil
+            hum.WalkSpeed = 0
+            hum.JumpPower = 0
+            hum.JumpHeight = 0
         end
+
+        pcall(function()
+            local pm = p:FindFirstChild("PlayerScripts")
+            if pm then
+                local playerModule = pm:FindFirstChild("PlayerModule")
+                if playerModule then
+                    local controls = require(playerModule):GetControls()
+                    if controls then
+                        controls:Disable()
+                        fcControlsDisabled = true
+                    end
+                end
+            end
+        end)
     end
 
     local function fcStop()
@@ -466,9 +481,28 @@ function StartScript(plf)
         local char = p.Character
         if char then
             local hum = char:FindFirstChildOfClass("Humanoid")
-            if hum then c.CameraSubject = hum end
+            if hum then
+                c.CameraSubject = hum
+                hum.WalkSpeed = 16
+                hum.JumpPower = 50
+                hum.JumpHeight = 7.2
+            end
         end
         fcCFrame = nil
+
+        if fcControlsDisabled then
+            pcall(function()
+                local pm = p:FindFirstChild("PlayerScripts")
+                if pm then
+                    local playerModule = pm:FindFirstChild("PlayerModule")
+                    if playerModule then
+                        local controls = require(playerModule):GetControls()
+                        if controls then controls:Enable() end
+                    end
+                end
+            end)
+            fcControlsDisabled = false
+        end
     end
 
     local function autoHop()
@@ -619,7 +653,7 @@ function StartScript(plf)
 
     local subText = Instance.new("TextLabel", title)
     subText.Size = UDim2.new(0, 240, 1, 0); subText.Position = UDim2.new(0, 80, 0, 0)
-    subText.BackgroundTransparency = 1; subText.Text = "/  v6.7"
+    subText.BackgroundTransparency = 1; subText.Text = "/  v6.8"
     subText.TextColor3 = TH.TextMute; subText.Font = FONT; subText.TextSize = 11
     subText.TextXAlignment = Enum.TextXAlignment.Left
     subText.Visible = isPC
@@ -1275,13 +1309,6 @@ function StartScript(plf)
         toggle(wh, "Auto Bhop / WallHop", "WallHop", false, function(v) cfg.WallHop = v end)
         slider(wh, "WallHop Power", "WallHopPower", 10, 150, 50, function(v) cfg.WallHopPower = v end)
 
-        local fc = section(pages["Move"], "free cam")
-        toggle(fc, "Free Cam", "FreeCam", false, function(v)
-            cfg.FreeCam = v
-            if v then fcStart() else fcStop() end
-        end)
-        slider(fc, "Free Cam Speed", "FreeCamSpeed", 20, 200, 60, function(v) cfg.FreeCamSpeed = v end)
-
         local aa = section(pages["Move"], "anti-aim")
         toggle(aa, "Anti-Aim", "AntiAimEnabled", false, function(v)
             cfg.AntiAimEnabled = v
@@ -1333,6 +1360,13 @@ function StartScript(plf)
             end
         end)
         toggle(s, "FPS / Ping Overlay", "FPSOverlay", false, function(v) cfg.FPSOverlay = v end)
+
+        local fc = section(pages["Perf"], "free cam")
+        toggle(fc, "Free Cam", "FreeCam", false, function(v)
+            cfg.FreeCam = v
+            if v then fcStart() else fcStop() end
+        end)
+        slider(fc, "Free Cam Speed", "FreeCamSpeed", 20, 200, 60, function(v) cfg.FreeCamSpeed = v end)
     end
 
     do
@@ -1846,7 +1880,6 @@ function StartScript(plf)
         end)
     end
 
-    -- Free Cam input
     U.InputBegan:Connect(function(input, gpe)
         if gpe then return end
         if not cfg.FreeCam then return end
@@ -1864,6 +1897,17 @@ function StartScript(plf)
         if input.KeyCode == Enum.KeyCode.D then fcKeys.D = false end
         if input.KeyCode == Enum.KeyCode.Q then fcKeys.Q = false end
         if input.KeyCode == Enum.KeyCode.E then fcKeys.E = false end
+    end)
+
+    U.InputChanged:Connect(function(input)
+        if not cfg.FreeCam or not fcCFrame then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            local sens = 0.003
+            local dx, dy = input.Delta.X, input.Delta.Y
+            local yaw = CFrame.Angles(0, -dx * sens, 0)
+            local pitch = CFrame.Angles(-dy * sens, 0, 0)
+            fcCFrame = fcCFrame * yaw * pitch
+        end
     end)
 
     setTab("Aim")
@@ -2070,20 +2114,16 @@ function StartScript(plf)
         c.CFrame = c.CFrame:Lerp(goal, alpha)
     end)
 
-    -- FPS/ping tracker
     local fpsFrames = 0
     local fpsLast = tick()
     local fpsValue = 0
     local pingValue = 0
-
-    -- FPS booster periodic re-run (catches new particles)
     local fpsBoostAccum = 0
 
     mainLoop = RS.RenderStepped:Connect(function(dt)
         local camPos = c.CFrame.Position
         local screenCenter = c.ViewportSize / 2
 
-        -- FPS/ping counters
         if cfg.FPSOverlay then
             fpsFrames = fpsFrames + 1
             if tick() - fpsLast >= 1 then
@@ -2097,7 +2137,6 @@ function StartScript(plf)
             end
         end
 
-        -- FPS booster periodic sweep
         if cfg.FPSBooster then
             fpsBoostAccum = fpsBoostAccum + dt
             if fpsBoostAccum >= 1 then
@@ -2106,7 +2145,6 @@ function StartScript(plf)
             end
         end
 
-        -- Free cam
         if cfg.FreeCam and fcCFrame then
             local move = Vector3.zero
             if fcKeys.W then move = move + fcCFrame.LookVector end
@@ -2468,7 +2506,6 @@ function StartScript(plf)
             _G.__zeva_radarGui.sg.Enabled = false
         end
 
-        -- FPS / Ping overlay
         if cfg.FPSOverlay then
             if not _G.__zeva_fpsGui then
                 local sg = Instance.new("ScreenGui", p.PlayerGui)
@@ -2476,7 +2513,7 @@ function StartScript(plf)
                 sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true; sg.DisplayOrder = 40
                 local lbl = Instance.new("TextLabel", sg)
                 lbl.Size = UDim2.new(0, 200, 0, 24)
-                lbl.Position = UDim2.new(0, 10, 0, 10)
+                lbl.Position = UDim2.new(1, -210, 0, 10)
                 lbl.BackgroundColor3 = TH.Bg; lbl.BackgroundTransparency = 0.4
                 lbl.TextColor3 = TH.Accent; lbl.Font = FONTB; lbl.TextSize = 12
                 lbl.BorderSizePixel = 0; lbl.Text = ""
