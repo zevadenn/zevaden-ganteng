@@ -1,4 +1,4 @@
---[ V6 xeva ]--
+--[ V6 xeva + ANTI-AIM + AUTO BHOP/WALLHOP + RADAR + PERF ]--
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
 local TS  = game:GetService("TweenService")
@@ -6,6 +6,8 @@ local U   = game:GetService("UserInputService")
 local VIM = game:GetService("VirtualInputManager")
 local SS  = game:GetService("SoundService")
 local HS  = game:GetService("HttpService")
+local L   = game:GetService("Lighting")
+local Stats = game:GetService("Stats")
 local p   = P.LocalPlayer
 local c   = workspace.CurrentCamera
 while not c do task.wait() c = workspace.CurrentCamera end
@@ -316,6 +318,21 @@ function StartScript(plf)
         Radar = false,
         RadarSize = 140,
         RadarRange = 200,
+
+        AntiAimEnabled = false,
+        AntiAimMode = "Static",
+        AntiAimPitch = 0,
+        AntiAimYaw = 180,
+        AntiAimSpinSpeed = 8,
+
+        WallHop = false,
+        WallHopPower = 50,
+
+        -- NEW
+        FPSBooster = false,
+        FPSOverlay = false,
+        FreeCam = false,
+        FreeCamSpeed = 60,
     }
 
     local FEATURE_INDEX = {}
@@ -392,6 +409,156 @@ function StartScript(plf)
     local killStats = { hits = 0 }
     local killFeed = {}
 
+    local aaYawAccum = 0
+
+    local wallHopRay = RaycastParams.new()
+    wallHopRay.FilterType = Enum.RaycastFilterType.Exclude
+    wallHopRay.IgnoreWater = true
+
+    local lastHop = 0
+    local lastJumpFire = 0
+
+    -- FPS Booster
+    local fpsStripped = false
+    local function applyFPSBooster()
+        pcall(function()
+            L.GlobalShadows = false
+            L.FogEnd = 100000
+            L.Brightness = 1
+            for _, obj in ipairs(L:GetChildren()) do
+                if obj:IsA("PostEffect") then obj.Enabled = false end
+            end
+        end)
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Smoke")
+               or obj:IsA("Fire") or obj:IsA("Sparkles") or obj:IsA("Explosion") then
+                pcall(function() obj.Enabled = false end)
+            end
+        end
+    end
+
+    local function restoreFPSBooster()
+        pcall(function()
+            L.GlobalShadows = true
+            L.FogEnd = 100000
+        end)
+    end
+
+    -- Free Cam
+    local fcCFrame = nil
+    local fcKeys = {W=false, A=false, S=false, D=false, Q=false, E=false}
+    local fcMouseLocked = false
+    local fcLastMouse = nil
+
+    local function fcStart()
+        local char = p.Character
+        if not char then return end
+        fcCFrame = c.CFrame
+        c.CameraType = Enum.CameraType.Scriptable
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            c.CameraSubject = nil
+        end
+    end
+
+    local function fcStop()
+        c.CameraType = Enum.CameraType.Custom
+        local char = p.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then c.CameraSubject = hum end
+        end
+        fcCFrame = nil
+    end
+
+    local function autoHop()
+        if not cfg.WallHop then return end
+        local char = p.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not (hrp and hum) then return end
+
+        local now = tick()
+        local onGround = hum.FloorMaterial ~= Enum.Material.Air
+
+        if onGround then
+            if now - lastJumpFire > 0.03 then
+                hum.Jump = true
+                pcall(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end)
+                lastJumpFire = now
+            end
+            return
+        end
+
+        if now - lastHop < 0.06 then return end
+
+        wallHopRay.FilterDescendantsInstances = {char}
+        local origin = hrp.Position
+        local lv, rv = hrp.CFrame.LookVector, hrp.CFrame.RightVector
+        local dirs = {
+            lv, -lv, rv, -rv,
+            (lv + rv).Unit, (lv - rv).Unit, (-lv + rv).Unit, (-lv - rv).Unit,
+        }
+        local normal = nil
+        for _, d in ipairs(dirs) do
+            local r = workspace:Raycast(origin, d * 4.5, wallHopRay)
+            if r then normal = r.Normal; break end
+        end
+        if not normal then return end
+
+        lastHop = now
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end)
+        local push = Instance.new("BodyVelocity")
+        push.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+        push.Velocity = normal * cfg.WallHopPower + Vector3.new(0, 50, 0)
+        push.Parent = hrp
+        game:GetService("Debris"):AddItem(push, 0.18)
+    end
+
+    local function applyAntiAim()
+        local char = p.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+
+        local neck = char:FindFirstChild("Neck", true)
+        if neck and neck:IsA("Motor6D") then
+            neck.C0 = CFrame.new(0, 1, 0)
+                * CFrame.Angles(-math.pi/2 + math.rad(cfg.AntiAimPitch), math.pi, 0)
+        end
+
+        local yaw
+        if cfg.AntiAimMode == "Static" then
+            yaw = cfg.AntiAimYaw
+        elseif cfg.AntiAimMode == "Jitter" then
+            yaw = cfg.AntiAimYaw + math.random(-45, 45)
+        elseif cfg.AntiAimMode == "Spin" then
+            aaYawAccum = (aaYawAccum + cfg.AntiAimSpinSpeed) % 360
+            yaw = aaYawAccum
+        else
+            yaw = cfg.AntiAimYaw
+        end
+
+        local look = hrp.CFrame.LookVector
+        local flat = Vector3.new(look.X, 0, look.Z)
+        if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, 1) end
+        flat = flat.Unit
+        local newLook = CFrame.Angles(0, math.rad(yaw), 0) * flat
+        hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + newLook)
+    end
+
+    local function restoreAntiAim()
+        aaYawAccum = 0
+        local char = p.Character
+        if char then
+            local neck = char:FindFirstChild("Neck", true)
+            if neck and neck:IsA("Motor6D") then
+                neck.C0 = CFrame.new(0, 1, 0) * CFrame.Angles(-math.pi/2, math.pi, 0)
+            end
+        end
+    end
+
     local function curveAlpha(t)
         t = math.clamp(t, 0, 1)
         if cfg.SmoothCurve == "Exponential" then
@@ -452,7 +619,7 @@ function StartScript(plf)
 
     local subText = Instance.new("TextLabel", title)
     subText.Size = UDim2.new(0, 240, 1, 0); subText.Position = UDim2.new(0, 80, 0, 0)
-    subText.BackgroundTransparency = 1; subText.Text = "/  v6.2e"
+    subText.BackgroundTransparency = 1; subText.Text = "/  v6.7"
     subText.TextColor3 = TH.TextMute; subText.Font = FONT; subText.TextSize = 11
     subText.TextXAlignment = Enum.TextXAlignment.Left
     subText.Visible = isPC
@@ -763,7 +930,6 @@ function StartScript(plf)
         return { set = function(v) value = v; redraw(); cb(v) end, get = function() return value end }
     end
 
-    -- FIXED: numInput now writes back to cfg so render loop picks it up
     local function numInput(parent, label, cfgKey, default, cb)
         local r = row(parent, 28)
         local lbl = Instance.new("TextLabel", r)
@@ -924,6 +1090,8 @@ function StartScript(plf)
         end)
     end
 
+    RS.Heartbeat:Connect(autoHop)
+
     if isPC then
         U.InputBegan:Connect(function(input, gpe)
             if gpe then return end
@@ -967,8 +1135,8 @@ function StartScript(plf)
     local bindName = "ZevaAim_"..tostring(tick())
     local mainLoop
 
-    makeTab("Aim"); makeTab("ESP"); makeTab("Move"); makeTab("Set"); makeTab("Body"); makeTab("Target"); makeTab("Settings")
-    makePage("Aim"); makePage("ESP"); makePage("Move"); makePage("Set"); makePage("Body"); makePage("Target"); makePage("Settings")
+    makeTab("Aim"); makeTab("ESP"); makeTab("Move"); makeTab("Perf"); makeTab("Set"); makeTab("Body"); makeTab("Target"); makeTab("Settings")
+    makePage("Aim"); makePage("ESP"); makePage("Move"); makePage("Perf"); makePage("Set"); makePage("Body"); makePage("Target"); makePage("Settings")
 
     do
         BUILD_PAGE = "Aim"
@@ -1102,6 +1270,69 @@ function StartScript(plf)
         toggle(s, "Spinbot", "Spin", false, function(v) cfg.Spin = v end)
         toggle(s, "Noclip", "Noclip", false, function(v) cfg.Noclip = v end)
         slider(s, "Spin Speed", "SpinSpeed", 0, 360, 50, function(v) cfg.SpinSpeed = v end)
+
+        local wh = section(pages["Move"], "auto bhop / wallhop")
+        toggle(wh, "Auto Bhop / WallHop", "WallHop", false, function(v) cfg.WallHop = v end)
+        slider(wh, "WallHop Power", "WallHopPower", 10, 150, 50, function(v) cfg.WallHopPower = v end)
+
+        local fc = section(pages["Move"], "free cam")
+        toggle(fc, "Free Cam", "FreeCam", false, function(v)
+            cfg.FreeCam = v
+            if v then fcStart() else fcStop() end
+        end)
+        slider(fc, "Free Cam Speed", "FreeCamSpeed", 20, 200, 60, function(v) cfg.FreeCamSpeed = v end)
+
+        local aa = section(pages["Move"], "anti-aim")
+        toggle(aa, "Anti-Aim", "AntiAimEnabled", false, function(v)
+            cfg.AntiAimEnabled = v
+            if not v then restoreAntiAim() end
+        end)
+
+        local aaModeRow = Instance.new("Frame", aa)
+        aaModeRow.Size = UDim2.new(1, 0, 0, 28); aaModeRow.BackgroundTransparency = 1
+        local aaModeLbl = Instance.new("TextLabel", aaModeRow)
+        aaModeLbl.Size = UDim2.new(0.4, 0, 1, 0); aaModeLbl.BackgroundTransparency = 1
+        aaModeLbl.Text = "Mode"; aaModeLbl.TextColor3 = TH.Text; aaModeLbl.Font = FONT; aaModeLbl.TextSize = 12
+        aaModeLbl.TextXAlignment = Enum.TextXAlignment.Left
+        local aaOpts = {"Static", "Jitter", "Spin"}
+        local aaIdx = 1
+        for i, vv in ipairs(aaOpts) do if vv == cfg.AntiAimMode then aaIdx = i end end
+        local aaBtn = Instance.new("TextButton", aaModeRow)
+        aaBtn.Size = UDim2.new(0.6, -10, 1, 0); aaBtn.Position = UDim2.new(0.4, 0, 0, 0)
+        aaBtn.BackgroundColor3 = TH.Panel2; aaBtn.Text = cfg.AntiAimMode
+        aaBtn.TextColor3 = TH.Accent; aaBtn.Font = FONTB; aaBtn.TextSize = 11
+        aaBtn.AutoButtonColor = false; aaBtn.BorderSizePixel = 0
+        round(aaBtn, 6); stroke(aaBtn, TH.LineSoft, 1, 0.4)
+        regAccent(aaBtn, "TextColor3")
+        aaBtn.MouseButton1Click:Connect(function()
+            aaIdx = aaIdx % #aaOpts + 1
+            cfg.AntiAimMode = aaOpts[aaIdx]
+            aaBtn.Text = cfg.AntiAimMode
+            aaYawAccum = 0
+        end)
+        regFeature("Anti-Aim Mode", BUILD_PAGE, aaModeRow)
+
+        slider(aa, "AA Pitch", "AntiAimPitch", -89, 89, 0, function(v) cfg.AntiAimPitch = v end)
+        slider(aa, "AA Yaw", "AntiAimYaw", 0, 360, 180, function(v) cfg.AntiAimYaw = v end)
+        slider(aa, "AA Spin Speed", "AntiAimSpinSpeed", 0, 45, 8, function(v) cfg.AntiAimSpinSpeed = v end)
+    end
+
+    do
+        BUILD_PAGE = "Perf"
+        local s = section(pages["Perf"], "performance")
+        toggle(s, "FPS Booster", "FPSBooster", false, function(v)
+            cfg.FPSBooster = v
+            if v then
+                if not fpsStripped then
+                    fpsStripped = true
+                    applyFPSBooster()
+                end
+            else
+                fpsStripped = false
+                restoreFPSBooster()
+            end
+        end)
+        toggle(s, "FPS / Ping Overlay", "FPSOverlay", false, function(v) cfg.FPSOverlay = v end)
     end
 
     do
@@ -1471,6 +1702,9 @@ function StartScript(plf)
 
         local function teardown()
             if mainLoop then pcall(function() mainLoop:Disconnect() end) end
+            pcall(restoreAntiAim)
+            pcall(fcStop)
+            pcall(restoreFPSBooster)
             pcall(function() if fC then fC:Remove() end end)
             pcall(function() if fS then fS:Remove() end end)
             pcall(function() if fT then fT:Remove() end end)
@@ -1488,6 +1722,10 @@ function StartScript(plf)
             if _G.__zeva_radarGui then
                 pcall(function() _G.__zeva_radarGui.sg:Destroy() end)
                 _G.__zeva_radarGui = nil
+            end
+            if _G.__zeva_fpsGui then
+                pcall(function() _G.__zeva_fpsGui.sg:Destroy() end)
+                _G.__zeva_fpsGui = nil
             end
             pcall(function() g:Destroy() end)
         end
@@ -1607,6 +1845,26 @@ function StartScript(plf)
             end
         end)
     end
+
+    -- Free Cam input
+    U.InputBegan:Connect(function(input, gpe)
+        if gpe then return end
+        if not cfg.FreeCam then return end
+        if input.KeyCode == Enum.KeyCode.W then fcKeys.W = true end
+        if input.KeyCode == Enum.KeyCode.A then fcKeys.A = true end
+        if input.KeyCode == Enum.KeyCode.S then fcKeys.S = true end
+        if input.KeyCode == Enum.KeyCode.D then fcKeys.D = true end
+        if input.KeyCode == Enum.KeyCode.Q then fcKeys.Q = true end
+        if input.KeyCode == Enum.KeyCode.E then fcKeys.E = true end
+    end)
+    U.InputEnded:Connect(function(input)
+        if input.KeyCode == Enum.KeyCode.W then fcKeys.W = false end
+        if input.KeyCode == Enum.KeyCode.A then fcKeys.A = false end
+        if input.KeyCode == Enum.KeyCode.S then fcKeys.S = false end
+        if input.KeyCode == Enum.KeyCode.D then fcKeys.D = false end
+        if input.KeyCode == Enum.KeyCode.Q then fcKeys.Q = false end
+        if input.KeyCode == Enum.KeyCode.E then fcKeys.E = false end
+    end)
 
     setTab("Aim")
 
@@ -1812,9 +2070,58 @@ function StartScript(plf)
         c.CFrame = c.CFrame:Lerp(goal, alpha)
     end)
 
-    mainLoop = RS.RenderStepped:Connect(function()
+    -- FPS/ping tracker
+    local fpsFrames = 0
+    local fpsLast = tick()
+    local fpsValue = 0
+    local pingValue = 0
+
+    -- FPS booster periodic re-run (catches new particles)
+    local fpsBoostAccum = 0
+
+    mainLoop = RS.RenderStepped:Connect(function(dt)
         local camPos = c.CFrame.Position
         local screenCenter = c.ViewportSize / 2
+
+        -- FPS/ping counters
+        if cfg.FPSOverlay then
+            fpsFrames = fpsFrames + 1
+            if tick() - fpsLast >= 1 then
+                fpsValue = fpsFrames
+                fpsFrames = 0
+                fpsLast = tick()
+                pcall(function()
+                    local item = Stats.Network.ServerStatsItem["Data Ping"]
+                    if item then pingValue = math.floor(item:GetValue()) end
+                end)
+            end
+        end
+
+        -- FPS booster periodic sweep
+        if cfg.FPSBooster then
+            fpsBoostAccum = fpsBoostAccum + dt
+            if fpsBoostAccum >= 1 then
+                fpsBoostAccum = 0
+                applyFPSBooster()
+            end
+        end
+
+        -- Free cam
+        if cfg.FreeCam and fcCFrame then
+            local move = Vector3.zero
+            if fcKeys.W then move = move + fcCFrame.LookVector end
+            if fcKeys.S then move = move - fcCFrame.LookVector end
+            if fcKeys.A then move = move - fcCFrame.RightVector end
+            if fcKeys.D then move = move + fcCFrame.RightVector end
+            if fcKeys.E then move = move + Vector3.yAxis end
+            if fcKeys.Q then move = move - Vector3.yAxis end
+            if move.Magnitude > 0 then
+                fcCFrame = CFrame.new(fcCFrame.Position + move.Unit * cfg.FreeCamSpeed * dt) * (fcCFrame - fcCFrame.Position)
+            end
+            c.CFrame = fcCFrame
+        end
+
+        if cfg.AntiAimEnabled then applyAntiAim() end
 
         if fC then pcall(function()
             fC.Radius = cfg.FovSize
@@ -2095,55 +2402,95 @@ function StartScript(plf)
                 local frame = Instance.new("Frame", sg)
                 frame.Size = UDim2.new(0, cfg.RadarSize, 0, cfg.RadarSize)
                 frame.Position = UDim2.new(0, 20, 0, 100)
-                frame.BackgroundColor3 = TH.Bg; frame.BackgroundTransparency = 0.35
+                frame.BackgroundColor3 = TH.Bg
+                frame.BackgroundTransparency = 0.35
                 frame.BorderSizePixel = 0
+                frame.ClipsDescendants = true
                 round(frame, 8); stroke(frame, TH.LineSoft, 1, 0.4)
                 local holder = Instance.new("Frame", frame)
                 holder.Size = UDim2.new(1, 0, 1, 0); holder.BackgroundTransparency = 1
-                _G.__zeva_radarGui = { sg = sg, frame = frame, holder = holder }
+                local selfDot = Instance.new("Frame", holder)
+                selfDot.Size = UDim2.new(0, 6, 0, 6)
+                selfDot.BackgroundColor3 = TH.Accent
+                selfDot.BorderSizePixel = 0
+                round(selfDot, 3)
+                _G.__zeva_radarGui = { sg = sg, frame = frame, holder = holder, selfDot = selfDot, dots = {} }
             end
             local rd = _G.__zeva_radarGui
-            rd.frame.Size = UDim2.new(0, cfg.RadarSize, 0, cfg.RadarSize)
-            for _, ch in ipairs(rd.holder:GetChildren()) do ch:Destroy() end
+            if rd.frame.Size.X.Offset ~= cfg.RadarSize then
+                rd.frame.Size = UDim2.new(0, cfg.RadarSize, 0, cfg.RadarSize)
+            end
+            local half = cfg.RadarSize / 2
+            local range = cfg.RadarRange
+
+            rd.selfDot.Position = UDim2.new(0, half - 3, 0, half - 3)
 
             local cpos = c.CFrame.Position
             local look = c.CFrame.LookVector
             local yaw = math.atan2(look.X, look.Z)
-            local half = cfg.RadarSize / 2
-            local range = cfg.RadarRange
+            local cosY, sinY = math.cos(yaw), math.sin(yaw)
 
-            local selfDot = Instance.new("Frame", rd.holder)
-            selfDot.Size = UDim2.new(0, 6, 0, 6)
-            selfDot.Position = UDim2.new(0, half - 3, 0, half - 3)
-            selfDot.BackgroundColor3 = TH.Accent
-            selfDot.BorderSizePixel = 0
-            round(selfDot, 3)
-
+            local dots = rd.dots
+            local idx = 0
             for _, pl in pairs(P:GetPlayers()) do
-                if pl ~= p and v(pl) and pl.Character then
+                if pl ~= p and pl.Character then
                     local hrp = pl.Character:FindFirstChild("HumanoidRootPart")
                     if hrp then
                         local rel = hrp.Position - cpos
                         local dx, dz = rel.X, rel.Z
-                        local rx = dx * math.cos(yaw) + dz * math.sin(yaw)
-                        local rz = -dx * math.sin(yaw) + dz * math.cos(yaw)
                         local dist = math.sqrt(dx*dx + dz*dz)
                         if dist < range then
+                            idx = idx + 1
+                            local dot = dots[idx]
+                            if not dot or not dot.Parent then
+                                dot = Instance.new("Frame", rd.holder)
+                                dot.Size = UDim2.new(0, 6, 0, 6)
+                                dot.BackgroundColor3 = TH.Danger
+                                dot.BorderSizePixel = 0
+                                round(dot, 3)
+                                dots[idx] = dot
+                            end
+                            local rx = dx * cosY - dz * sinY
+                            local rz = dx * sinY + dz * cosY
                             local sx = half + (rx / range) * half
                             local sy = half - (rz / range) * half
-                            local dot = Instance.new("Frame", rd.holder)
-                            dot.Size = UDim2.new(0, 6, 0, 6)
                             dot.Position = UDim2.new(0, sx - 3, 0, sy - 3)
-                            dot.BackgroundColor3 = TH.Danger
-                            dot.BorderSizePixel = 0
-                            round(dot, 3)
+                            dot.Visible = true
                         end
                     end
                 end
             end
+            for i = idx + 1, #dots do
+                if dots[i] then dots[i].Visible = false end
+            end
             rd.sg.Enabled = true
         elseif _G.__zeva_radarGui then
             _G.__zeva_radarGui.sg.Enabled = false
+        end
+
+        -- FPS / Ping overlay
+        if cfg.FPSOverlay then
+            if not _G.__zeva_fpsGui then
+                local sg = Instance.new("ScreenGui", p.PlayerGui)
+                sg.Name = "zeva_fps_" .. tostring(math.random(1e6, 9e6))
+                sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true; sg.DisplayOrder = 40
+                local lbl = Instance.new("TextLabel", sg)
+                lbl.Size = UDim2.new(0, 200, 0, 24)
+                lbl.Position = UDim2.new(0, 10, 0, 10)
+                lbl.BackgroundColor3 = TH.Bg; lbl.BackgroundTransparency = 0.4
+                lbl.TextColor3 = TH.Accent; lbl.Font = FONTB; lbl.TextSize = 12
+                lbl.BorderSizePixel = 0; lbl.Text = ""
+                lbl.TextXAlignment = Enum.TextXAlignment.Left
+                local pp = Instance.new("UIPadding", lbl)
+                pp.PaddingLeft = UDim.new(0, 8)
+                round(lbl, 6); stroke(lbl, TH.LineSoft, 1, 0.4)
+                _G.__zeva_fpsGui = { sg = sg, lbl = lbl }
+            end
+            local fg = _G.__zeva_fpsGui
+            fg.lbl.Text = "FPS: " .. fpsValue .. "   Ping: " .. pingValue .. "ms"
+            fg.sg.Enabled = true
+        elseif _G.__zeva_fpsGui then
+            _G.__zeva_fpsGui.sg.Enabled = false
         end
     end)
 
