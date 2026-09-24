@@ -1,4 +1,4 @@
---[ V6.9 xeva — OPTIMIZED | terminal key system | mobile layout fixed | fps booster rewritten | bugfix pass ]--
+--[ V6.9 xeva — OPTIMIZED terminal key system | better fps booster ]--
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
 local TS  = game:GetService("TweenService")
@@ -98,7 +98,7 @@ local function clearSelectors()
 end
 
 -- ============================================================
--- TERMINAL KEY SYSTEM — visual only
+-- TERMINAL KEY SYSTEM
 -- ============================================================
 local TERM = {
     Bg    = Color3.fromRGB(6, 6, 7),
@@ -343,7 +343,6 @@ end
 function StartScript(plf)
     clearSelectors()
 
-    -- cleanup stale global overlays from a previous crashed run
     for _, k in ipairs({"__zeva_killStatsGui","__zeva_killFeedGui","__zeva_radarGui","__zeva_fpsGui"}) do
         local val = _G[k]
         if type(val) == "table" and val.sg then
@@ -396,9 +395,6 @@ function StartScript(plf)
     local function regRefresh(k, fn) UI_REFRESH[k] = UI_REFRESH[k] or {}; table.insert(UI_REFRESH[k], fn) end
     local function refreshAllFromCfg() for _, fns in pairs(UI_REFRESH) do for _, fn in ipairs(fns) do pcall(fn) end end end
 
-    -- ============================================================
-    -- connection tracker — every listener we add goes in here
-    -- ============================================================
     local conns = {}
     local function reg(c)
         if c then table.insert(conns, c) end
@@ -411,7 +407,6 @@ function StartScript(plf)
         conns = {}
     end
 
-    -- re-grab camera whenever workspace swaps it
     reg(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
         local nc = workspace.CurrentCamera
         if nc then c = nc end
@@ -455,23 +450,37 @@ function StartScript(plf)
     wallHopRay.IgnoreWater = true
     local lastHop, lastJumpFire = 0, 0
 
-    -- hoisted ray directions for autohop (no per-call table alloc)
     local hopDirs = table.create(8)
 
     -- ============================================================
-    -- FPS booster
+    -- FPS BOOSTER — aggressive, fully restorable
     -- ============================================================
     local fpsBoosted = false
     local fpsConns   = nil
-    local peStates   = {}   -- original PostEffect.Enabled values
+    local fpsRevert  = {}
 
-    local function stripPerf(o)
-        if o:IsA("ParticleEmitter") or o:IsA("Trail") or o:IsA("Smoke")
-           or o:IsA("Fire") or o:IsA("Sparkles") or o:IsA("Explosion") then
-            pcall(function() o.Enabled = false end)
-        elseif o:IsA("PostEffect") then
-            peStates[o] = o.Enabled
-            pcall(function() o.Enabled = false end)
+    local function _saveSet(obj, prop, newValue)
+        if not obj then return end
+        local ok, orig = pcall(function() return obj[prop] end)
+        if not ok then return end
+        table.insert(fpsRevert, {obj, prop, orig})
+        pcall(function() obj[prop] = newValue end)
+    end
+
+    local function stripPerf(obj)
+        if not obj then return end
+        if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Smoke")
+           or obj:IsA("Fire") or obj:IsA("Sparkles") or obj:IsA("Explosion")
+           or obj:IsA("Beam") then
+            _saveSet(obj, "Enabled", false)
+        elseif obj:IsA("PostEffect") then
+            _saveSet(obj, "Enabled", false)
+        elseif obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then
+            if obj.Enabled then _saveSet(obj, "Enabled", false) end
+        elseif obj:IsA("Decal") or obj:IsA("Texture") then
+            if obj.Transparency < 1 then _saveSet(obj, "Transparency", 1) end
+        elseif obj:IsA("BasePart") then
+            if obj.CastShadow then _saveSet(obj, "CastShadow", false) end
         end
     end
 
@@ -479,29 +488,37 @@ function StartScript(plf)
         if fpsBoosted then return end
         fpsBoosted = true
 
-        pcall(function()
-            L.GlobalShadows = false
-            L.FogEnd        = 100000
-        end)
-
         local sweep = workspace:GetDescendants()
         for i = 1, #sweep do stripPerf(sweep[i]) end
         sweep = nil
 
         for _, o in ipairs(L:GetChildren()) do
-            if o:IsA("PostEffect") then
-                peStates[o] = o.Enabled
-                pcall(function() o.Enabled = false end)
-            end
+            if o:IsA("PostEffect") then _saveSet(o, "Enabled", false) end
+            if o:IsA("Atmosphere") then _saveSet(o, "Density", 0) end
+            if o:IsA("Clouds")     then _saveSet(o, "Enabled", false) end
+        end
+
+        _saveSet(L, "GlobalShadows",            false)
+        _saveSet(L, "FogEnd",                   100000)
+        _saveSet(L, "ShadowSoftness",           0)
+        _saveSet(L, "EnvironmentDiffuseScale",  0)
+        _saveSet(L, "EnvironmentSpecularScale", 0)
+        _saveSet(L, "Brightness",               3)
+        _saveSet(L, "GlobalWind",               Vector3.zero)
+
+        local terr = workspace:FindFirstChildOfClass("Terrain")
+        if terr then
+            _saveSet(terr, "WaterWaveSize",     0)
+            _saveSet(terr, "WaterTransparency", 1)
+            _saveSet(terr, "WaterReflectance",  0)
         end
 
         fpsConns = {
-            ws    = workspace.DescendantAdded:Connect(stripPerf),
+            ws = workspace.DescendantAdded:Connect(stripPerf),
             light = L.ChildAdded:Connect(function(o)
-                if o:IsA("PostEffect") then
-                    peStates[o] = o.Enabled
-                    pcall(function() o.Enabled = false end)
-                end
+                if o:IsA("PostEffect") then _saveSet(o, "Enabled", false) end
+                if o:IsA("Atmosphere") then _saveSet(o, "Density", 0) end
+                if o:IsA("Clouds")     then _saveSet(o, "Enabled", false) end
             end),
         }
     end
@@ -514,11 +531,13 @@ function StartScript(plf)
             pcall(function() fpsConns.light:Disconnect() end)
             fpsConns = nil
         end
-        pcall(function() L.GlobalShadows = true end)
-        for o, was in pairs(peStates) do
-            pcall(function() if o.Parent then o.Enabled = was end end)
+        for i = #fpsRevert, 1, -1 do
+            local r = fpsRevert[i]
+            pcall(function()
+                if r[1] and r[1].Parent then r[1][r[2]] = r[3] end
+            end)
         end
-        peStates = {}
+        fpsRevert = {}
     end
 
     local fcCFrame, fcControlsDisabled
@@ -1606,7 +1625,6 @@ function StartScript(plf)
         return (h[1]+h[2]+h[3]) / 3
     end
 
-    -- cached player list
     local cachedPlayers = {}
     local function refreshPlayerCache()
         local list = P:GetPlayers()
@@ -1618,7 +1636,6 @@ function StartScript(plf)
     reg(P.PlayerAdded:Connect(function() task.wait(0.3); refreshPlayerCache() end))
     reg(P.PlayerRemoving:Connect(refreshPlayerCache))
 
-    -- noclip parts cache
     local noclipParts = {}
     local function rebuildNoclipParts()
         noclipParts = {}
