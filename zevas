@@ -1,4 +1,4 @@
---[ V6.9 xeva — OPTIMIZED | terminal key system | mobile layout fixed | fps booster rewritten ]--
+--[ V6.9 xeva — OPTIMIZED | terminal key system | mobile layout fixed | fps booster rewritten | bugfix pass ]--
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
 local TS  = game:GetService("TweenService")
@@ -342,6 +342,17 @@ end
 
 function StartScript(plf)
     clearSelectors()
+
+    -- cleanup stale global overlays from a previous crashed run
+    for _, k in ipairs({"__zeva_killStatsGui","__zeva_killFeedGui","__zeva_radarGui","__zeva_fpsGui"}) do
+        local val = _G[k]
+        if type(val) == "table" and val.sg then
+            pcall(function() val.sg:Destroy() end)
+        end
+        _G[k] = nil
+    end
+    _G.__zeva_applyConfigData = nil
+
     pcall(function()
         local s = Instance.new("Sound", SS)
         s.SoundId, s.Volume = "rbxassetid://4444585141", 0.5
@@ -385,6 +396,27 @@ function StartScript(plf)
     local function regRefresh(k, fn) UI_REFRESH[k] = UI_REFRESH[k] or {}; table.insert(UI_REFRESH[k], fn) end
     local function refreshAllFromCfg() for _, fns in pairs(UI_REFRESH) do for _, fn in ipairs(fns) do pcall(fn) end end end
 
+    -- ============================================================
+    -- connection tracker — every listener we add goes in here
+    -- ============================================================
+    local conns = {}
+    local function reg(c)
+        if c then table.insert(conns, c) end
+        return c
+    end
+    local function disconnectAll()
+        for _, c in ipairs(conns) do
+            pcall(function() c:Disconnect() end)
+        end
+        conns = {}
+    end
+
+    -- re-grab camera whenever workspace swaps it
+    reg(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+        local nc = workspace.CurrentCamera
+        if nc then c = nc end
+    end))
+
     local fC, fS, fT
     pcall(function()
         fC = Drawing.new("Circle")
@@ -423,15 +455,22 @@ function StartScript(plf)
     wallHopRay.IgnoreWater = true
     local lastHop, lastJumpFire = 0, 0
 
-    -- FPS booster: one-time strip + DescendantAdded hook. no per-second rescans.
+    -- hoisted ray directions for autohop (no per-call table alloc)
+    local hopDirs = table.create(8)
+
+    -- ============================================================
+    -- FPS booster
+    -- ============================================================
     local fpsBoosted = false
     local fpsConns   = nil
+    local peStates   = {}   -- original PostEffect.Enabled values
 
     local function stripPerf(o)
         if o:IsA("ParticleEmitter") or o:IsA("Trail") or o:IsA("Smoke")
            or o:IsA("Fire") or o:IsA("Sparkles") or o:IsA("Explosion") then
             pcall(function() o.Enabled = false end)
         elseif o:IsA("PostEffect") then
+            peStates[o] = o.Enabled
             pcall(function() o.Enabled = false end)
         end
     end
@@ -450,13 +489,19 @@ function StartScript(plf)
         sweep = nil
 
         for _, o in ipairs(L:GetChildren()) do
-            if o:IsA("PostEffect") then pcall(function() o.Enabled = false end) end
+            if o:IsA("PostEffect") then
+                peStates[o] = o.Enabled
+                pcall(function() o.Enabled = false end)
+            end
         end
 
         fpsConns = {
             ws    = workspace.DescendantAdded:Connect(stripPerf),
             light = L.ChildAdded:Connect(function(o)
-                if o:IsA("PostEffect") then pcall(function() o.Enabled = false end) end
+                if o:IsA("PostEffect") then
+                    peStates[o] = o.Enabled
+                    pcall(function() o.Enabled = false end)
+                end
             end),
         }
     end
@@ -470,6 +515,10 @@ function StartScript(plf)
             fpsConns = nil
         end
         pcall(function() L.GlobalShadows = true end)
+        for o, was in pairs(peStates) do
+            pcall(function() if o.Parent then o.Enabled = was end end)
+        end
+        peStates = {}
     end
 
     local fcCFrame, fcControlsDisabled
@@ -530,11 +579,19 @@ function StartScript(plf)
         if now - lastHop < 0.06 then return end
         wallHopRay.FilterDescendantsInstances = {char}
         local origin = hrp.Position
-        local lv, rv = hrp.CFrame.LookVector, hrp.CFrame.RightVector
-        local dirs = { lv, -lv, rv, -rv, (lv+rv).Unit, (lv-rv).Unit, (-lv+rv).Unit, (-lv-rv).Unit }
+        local cf = hrp.CFrame
+        local lv, rv = cf.LookVector, cf.RightVector
+        hopDirs[1] = lv
+        hopDirs[2] = -lv
+        hopDirs[3] = rv
+        hopDirs[4] = -rv
+        hopDirs[5] = (lv+rv).Unit
+        hopDirs[6] = (lv-rv).Unit
+        hopDirs[7] = (-lv+rv).Unit
+        hopDirs[8] = (-lv-rv).Unit
         local normal
         for i = 1, 8 do
-            local r = workspace:Raycast(origin, dirs[i] * 4.5, wallHopRay)
+            local r = workspace:Raycast(origin, hopDirs[i] * 4.5, wallHopRay)
             if r then normal = r.Normal; break end
         end
         if not normal then return end
@@ -964,16 +1021,16 @@ function StartScript(plf)
         U.InputEnded:Connect(function(i) if i.UserInputType == UIT_M1 or i.UserInputType == UIT_TCH then dragging = false end end)
     end
 
-    RS.Heartbeat:Connect(autoHop)
+    reg(RS.Heartbeat:Connect(autoHop))
 
     if isPC then
-        U.InputBegan:Connect(function(input, gpe)
+        reg(U.InputBegan:Connect(function(input, gpe)
             if gpe then return end
             if input.KeyCode == cfg.HideKey then
                 root.Visible = not root.Visible
                 if cfg.MenuSound and menuSound then pcall(function() menuSound:Play() end) end
             end
-        end)
+        end))
     else
         local opB = Instance.new("TextButton", g)
         opB.Size, opB.Position, opB.BackgroundColor3, opB.Text, opB.TextColor3, opB.Font, opB.TextSize =
@@ -1210,7 +1267,6 @@ function StartScript(plf)
         BUILD_PAGE = "Target"
         local s = section(pages["Target"], "target options")
         toggle(s, "Target All", "TargetAll", false, function(v) cfg.TargetAll = v end)
-        toggle(s, "Team Check", "TeamCheck", false, function(v) cfg.TeamCheck = v end)
         toggle(s, "K.O Check", "KOCheck", true, function(v) cfg.KOCheck = v end)
         button(s, "Clear Manual List", function() cfg.TargetList = {} end)
         local s2 = section(pages["Target"], "players")
@@ -1234,8 +1290,8 @@ function StartScript(plf)
             end
         end
         refreshPlayers()
-        P.PlayerAdded:Connect(function() task.wait(0.5); refreshPlayers() end)
-        P.PlayerRemoving:Connect(function() task.wait(0.2); refreshPlayers() end)
+        reg(P.PlayerAdded:Connect(function() task.wait(0.5); refreshPlayers() end))
+        reg(P.PlayerRemoving:Connect(function() task.wait(0.2); refreshPlayers() end))
         regRefresh("TargetList", refreshPlayers)
     end
 
@@ -1263,11 +1319,14 @@ function StartScript(plf)
             end
             data.SelectedParts = {}; for k,v in pairs(cfg.SelectedParts) do data.SelectedParts[k] = v end
             data.TargetList = {}; for k,v in pairs(cfg.TargetList) do data.TargetList[k] = v end
-            pcall(function()
-                writefile("zeva_config.json", HS:JSONEncode(data))
-                local btn = s:FindFirstChildOfClass("TextButton")
-                if btn then btn.Text = "Saved!"; task.delay(1.5, function() btn.Text = "Save Config" end) end
-            end)
+            local ok = pcall(function() writefile("zeva_config.json", HS:JSONEncode(data)) end)
+            local btn = s:FindFirstChildOfClass("TextButton")
+            if btn then
+                btn.Text = ok and "Saved!" or "Save Failed"
+                task.delay(1.5, function()
+                    if btn and btn.Parent then btn.Text = "Save Config" end
+                end)
+            end
         end)
         button(s, "Load Config", function()
             pcall(function() local raw = readfile("zeva_config.json"); applyConfigData(HS:JSONDecode(raw)) end)
@@ -1281,7 +1340,13 @@ function StartScript(plf)
             cfg.HideKey = Enum.KeyCode.LeftBracket; cfg.AimKey = nil
             cfg.AimKeyHeld=false; cfg.AimKeyToggled=false; cfg.AimToggleMode=false
             cfg.MenuSound=true; cfg.AccentColor = Color3.fromRGB(140,190,255)
-            applyAccent(cfg.AccentColor); refreshAllFromCfg()
+            cfg.SelectedParts = {["Head"]=true}
+            cfg.TargetList = {}
+            applyAccent(cfg.AccentColor)
+            if hintText and plf == "PC" then
+                hintText.Text = "["..keyName(cfg.HideKey).."]  to hide"
+            end
+            refreshAllFromCfg()
         end)
         _G.__zeva_applyConfigData = applyConfigData
 
@@ -1384,10 +1449,11 @@ function StartScript(plf)
         db.AutoButtonColor, db.BorderSizePixel = false, 0
         round(db, 6); stroke(db, TH.Danger, 1, 0.2)
         local function teardown()
-            if mainLoop then pcall(function() mainLoop:Disconnect() end) end
+            if mainLoop then pcall(function() mainLoop:Disconnect() end); mainLoop = nil end
             pcall(restoreAntiAim); pcall(fcStop); pcall(restoreFPSBooster)
-            pcall(function() fC:Remove() end); pcall(function() fS:Remove() end); pcall(function() fT:Remove() end)
             pcall(function() RS:UnbindFromRenderStep(bindName) end)
+            disconnectAll()
+            pcall(function() fC:Remove() end); pcall(function() fS:Remove() end); pcall(function() fT:Remove() end)
             for _, d in pairs(hitChams) do pcall(function() d.sq:Remove() end) end
             for _, o in ipairs(crosshairParts) do pcall(function() o:Remove() end) end
             if _G.__zeva_killStatsGui then pcall(function() _G.__zeva_killStatsGui.sg:Destroy() end); _G.__zeva_killStatsGui = nil end
@@ -1454,19 +1520,19 @@ function StartScript(plf)
     end
 
     if isPC then
-        U.InputBegan:Connect(function(input, gpe)
+        reg(U.InputBegan:Connect(function(input, gpe)
             if gpe then return end
             if inputMatchesAimKey(input) then
                 if cfg.AimToggleMode then cfg.AimKeyToggled = not cfg.AimKeyToggled; cfg.AimKeyHeld = cfg.AimKeyToggled
                 else cfg.AimKeyHeld = true end
             end
-        end)
-        U.InputEnded:Connect(function(input)
+        end))
+        reg(U.InputEnded:Connect(function(input)
             if not cfg.AimToggleMode and inputMatchesAimKey(input) then cfg.AimKeyHeld = false end
-        end)
+        end))
     end
 
-    U.InputBegan:Connect(function(input, gpe)
+    reg(U.InputBegan:Connect(function(input, gpe)
         if gpe or not cfg.FreeCam then return end
         if input.KeyCode == Enum.KeyCode.W then fcKeys.W = true end
         if input.KeyCode == Enum.KeyCode.A then fcKeys.A = true end
@@ -1474,22 +1540,22 @@ function StartScript(plf)
         if input.KeyCode == Enum.KeyCode.D then fcKeys.D = true end
         if input.KeyCode == Enum.KeyCode.Q then fcKeys.Q = true end
         if input.KeyCode == Enum.KeyCode.E then fcKeys.E = true end
-    end)
-    U.InputEnded:Connect(function(input)
+    end))
+    reg(U.InputEnded:Connect(function(input)
         if input.KeyCode == Enum.KeyCode.W then fcKeys.W = false end
         if input.KeyCode == Enum.KeyCode.A then fcKeys.A = false end
         if input.KeyCode == Enum.KeyCode.S then fcKeys.S = false end
         if input.KeyCode == Enum.KeyCode.D then fcKeys.D = false end
         if input.KeyCode == Enum.KeyCode.Q then fcKeys.Q = false end
         if input.KeyCode == Enum.KeyCode.E then fcKeys.E = false end
-    end)
-    U.InputChanged:Connect(function(input)
+    end))
+    reg(U.InputChanged:Connect(function(input)
         if not cfg.FreeCam or not fcCFrame then return end
         if input.UserInputType == UIT_MMV then
             local sens = 0.003
             fcCFrame = fcCFrame * CFrame.Angles(0, -input.Delta.X * sens, 0) * CFrame.Angles(-input.Delta.Y * sens, 0, 0)
         end
-    end)
+    end))
 
     setTab("Aim")
 
@@ -1540,26 +1606,72 @@ function StartScript(plf)
         return (h[1]+h[2]+h[3]) / 3
     end
 
+    -- cached player list
+    local cachedPlayers = {}
+    local function refreshPlayerCache()
+        local list = P:GetPlayers()
+        local new = {}
+        for i = 1, #list do new[list[i]] = true end
+        cachedPlayers = new
+    end
+    refreshPlayerCache()
+    reg(P.PlayerAdded:Connect(function() task.wait(0.3); refreshPlayerCache() end))
+    reg(P.PlayerRemoving:Connect(refreshPlayerCache))
+
+    -- noclip parts cache
+    local noclipParts = {}
+    local function rebuildNoclipParts()
+        noclipParts = {}
+        local ch = p.Character
+        if not ch then return end
+        for _, o in ipairs(ch:GetDescendants()) do
+            if o:IsA("BasePart") then table.insert(noclipParts, o) end
+        end
+    end
+    reg(p.CharacterAdded:Connect(function() task.wait(0.15); rebuildNoclipParts() end))
+    task.spawn(function() task.wait(0.15); rebuildNoclipParts() end)
+
     local dr = {}
     local function ce(pl)
         if pl == p or dr[pl] then return end
+        local function mkLine()
+            local l
+            pcall(function() l = Drawing.new("Line") end)
+            return l
+        end
+        local function mkSquare()
+            local sq
+            pcall(function() sq = Drawing.new("Square") end)
+            return sq
+        end
+        local function mkText()
+            local t
+            pcall(function() t = Drawing.new("Text") end)
+            return t
+        end
         local d = {
-            L={}, B=Drawing.new("Square"), HB=Drawing.new("Line"), HM=Drawing.new("Line"),
-            D=Drawing.new("Text"), T=Drawing.new("Line"), LT=Drawing.new("Line"),
+            L={},
+            B  = mkSquare(),
+            HB = mkLine(),
+            HM = mkLine(),
+            D  = mkText(),
+            T  = mkLine(),
+            LT = mkLine(),
         }
-        if d.B then d.B.Thickness, d.B.Color, d.B.Filled = cfg.BoxThickness, cfg.BoxColor, cfg.ESPFilled end
-        if d.HB then d.HB.Thickness, d.HB.Color = cfg.HealthThickness, cfg.HealthColor end
-        if d.HM then d.HM.Thickness = cfg.HealthThickness end
-        if d.D then d.D.Size, d.D.Center, d.D.Color = cfg.ESPFontSize, true, cfg.DistanceColor end
-        if d.T then d.T.Thickness, d.T.Color = cfg.TracerThickness, cfg.TracerColor end
-        if d.LT then d.LT.Thickness, d.LT.Color = cfg.LookTracerThickness, cfg.LookTracerColor end
+        if d.B  then d.B.Thickness,  d.B.Color,  d.B.Filled  = cfg.BoxThickness,  cfg.BoxColor,  cfg.ESPFilled end
+        if d.HB then d.HB.Thickness, d.HB.Color              = cfg.HealthThickness, cfg.HealthColor end
+        if d.HM then d.HM.Thickness                          = cfg.HealthThickness end
+        if d.D  then d.D.Size, d.D.Center, d.D.Color         = cfg.ESPFontSize, true, cfg.DistanceColor end
+        if d.T  then d.T.Thickness,  d.T.Color               = cfg.TracerThickness, cfg.TracerColor end
+        if d.LT then d.LT.Thickness, d.LT.Color              = cfg.LookTracerThickness, cfg.LookTracerColor end
         dr[pl] = d
         for i = 1, 30 do
-            local l = Drawing.new("Line"); l.Thickness, l.Color = cfg.BoneThickness, cfg.BoneColor
+            local l = mkLine()
+            if l then l.Thickness, l.Color = cfg.BoneThickness, cfg.BoneColor end
             table.insert(d.L, l)
         end
     end
-    P.PlayerAdded:Connect(ce)
+    reg(P.PlayerAdded:Connect(ce))
     for _, pl in pairs(P:GetPlayers()) do ce(pl) end
 
     local bPs = {
@@ -1583,7 +1695,9 @@ function StartScript(plf)
     local function pushCham(pl)
         local ex = hitChams[pl]
         if ex then ex.expiresAt = tick() + 2; return end
-        local sq = Drawing.new("Square")
+        local sq
+        pcall(function() sq = Drawing.new("Square") end)
+        if not sq then return end
         sq.Thickness, sq.Filled, sq.Color, sq.Transparency, sq.Visible = 2, true, Color3.fromRGB(0,255,140), 0.65, true
         hitChams[pl] = {sq = sq, expiresAt = tick() + 2}
     end
@@ -1591,7 +1705,9 @@ function StartScript(plf)
     local function updateChams()
         local now = tick()
         for pl, data in pairs(hitChams) do
-            if now > data.expiresAt then pcall(function() data.sq:Remove() end); hitChams[pl] = nil
+            if now > data.expiresAt then
+                pcall(function() data.sq:Remove() end)
+                hitChams[pl] = nil
             else
                 local ch = pl.Character
                 if ch then
@@ -1601,9 +1717,14 @@ function StartScript(plf)
                         local tS = c:WorldToViewportPoint(hrp.Position + V3_HEAD)
                         local bS = c:WorldToViewportPoint(hrp.Position - V3_FEET)
                         local h = math.abs(bS.Y - tS.Y); local w = h / 1.6
-                        data.sq.Size = Vector2.new(w, h); data.sq.Position = Vector2.new(ps.X - w/2, tS.Y)
+                        data.sq.Size = Vector2.new(w, h)
+                        data.sq.Position = Vector2.new(ps.X - w/2, tS.Y)
                         data.sq.Visible = on and ps.Z > 0
+                    else
+                        data.sq.Visible = false
                     end
+                else
+                    data.sq.Visible = false
                 end
             end
         end
@@ -1657,15 +1778,16 @@ function StartScript(plf)
     local function pushKillFeed(pl) table.insert(killFeed, {name = pl.DisplayName, born = tick()}) end
 
     local currentAimPos = nil
-    RS:BindToRenderStep(bindName, 200, function()
+    reg(RS:BindToRenderStep(bindName, 200, function()
         if not cfg.Aim or not currentAimPos then return end
         if isPC and cfg.AimKey ~= nil and cfg.AimKeyHeld == false then return end
         c.CFrame = c.CFrame:Lerp(CFrame.new(c.CFrame.Position, currentAimPos), curveAlpha(cfg.Smth))
-    end)
+    end))
 
     local fpsFrames, fpsLast, fpsValue, pingValue = 0, tick(), 0, 0
     local chamsAccum = 0
     local killFeedSig = ""
+    local lastKFCount = 0
 
     mainLoop = RS.RenderStepped:Connect(function(dt)
         local vs = c.ViewportSize
@@ -1736,9 +1858,10 @@ function StartScript(plf)
             end
         end
 
-        if cfg.Noclip and p.Character then
-            for _, pt in pairs(p.Character:GetDescendants()) do
-                if pt:IsA("BasePart") then pt.CanCollide = false end
+        if cfg.Noclip and #noclipParts > 0 then
+            for i = 1, #noclipParts do
+                local pt = noclipParts[i]
+                if pt and pt.Parent then pt.CanCollide = false end
             end
         end
         if cfg.Spin and p.Character and p.Character.PrimaryPart then
@@ -1749,7 +1872,7 @@ function StartScript(plf)
         if chamsAccum >= 0.1 then
             chamsAccum = 0
             local cKillFeed = cfg.KillFeed
-            for _, pl in pairs(P:GetPlayers()) do
+            for pl in pairs(cachedPlayers) do
                 if pl ~= p then
                     trackVel(pl)
                     local ch = pl.Character
@@ -1774,7 +1897,7 @@ function StartScript(plf)
         local anyESP = cBox or cHealth or cDist or cTracer or cLookTr or cBone
         for pl, d in pairs(dr) do
             local ch = pl.Character
-            local visible = anyESP and v(pl)
+            local visible = anyESP and ch and v(pl)
             if visible then
                 local hrp = ch:FindFirstChild("HumanoidRootPart")
                 local hum = ch:FindFirstChild("Humanoid")
@@ -1787,7 +1910,7 @@ function StartScript(plf)
                         local tS = c:WorldToViewportPoint(hrpPos + V3_HEAD)
                         local bS = c:WorldToViewportPoint(hrpPos - V3_FEET)
                         local ht = math.abs(bS.Y - tS.Y); local wd = ht / 1.6
-                        local tSx, tSy = tS.X, tS.Y
+                        local tSy = tS.Y
                         local psx, psy = ps.X, ps.Y
 
                         if d.B then
@@ -1908,7 +2031,7 @@ function StartScript(plf)
             local targetList = cfg.TargetList
             local selectedParts = cfg.SelectedParts
             local fovSq = cFovSize * cFovSize
-            for _, pl in pairs(P:GetPlayers()) do
+            for pl in pairs(cachedPlayers) do
                 if v(pl) and (targetAll or targetList[pl.Name]) then
                     local ch = pl.Character
                     if useNearest then
@@ -1964,7 +2087,7 @@ function StartScript(plf)
 
         if cfg.KillStats then
             local ks = _G.__zeva_killStatsGui
-            if not ks then
+            if not ks or not ks.sg or not ks.sg.Parent then
                 local sg = Instance.new("ScreenGui", p.PlayerGui)
                 sg.Name = "zeva_ks_"..tostring(math.random(1e6,9e6)); sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true; sg.DisplayOrder = 40
                 local lbl = Instance.new("TextLabel", sg)
@@ -1977,7 +2100,9 @@ function StartScript(plf)
             local txt = "Hits: " .. killStats.hits
             if ks.lbl.Text ~= txt then ks.lbl.Text = txt end
             if not ks.sg.Enabled then ks.sg.Enabled = true end
-        elseif _G.__zeva_killStatsGui and _G.__zeva_killStatsGui.sg.Enabled then _G.__zeva_killStatsGui.sg.Enabled = false end
+        elseif _G.__zeva_killStatsGui and _G.__zeva_killStatsGui.sg and _G.__zeva_killStatsGui.sg.Enabled then
+            _G.__zeva_killStatsGui.sg.Enabled = false
+        end
 
         local nowT = tick()
         local removedAny = false
@@ -1985,7 +2110,7 @@ function StartScript(plf)
             if nowT - killFeed[i].born > 4 then table.remove(killFeed, i); removedAny = true end
         end
         if cfg.KillFeed then
-            if not _G.__zeva_killFeedGui then
+            if not _G.__zeva_killFeedGui or not _G.__zeva_killFeedGui.sg or not _G.__zeva_killFeedGui.sg.Parent then
                 local sg = Instance.new("ScreenGui", p.PlayerGui)
                 sg.Name = "zeva_kf_"..tostring(math.random(1e6,9e6)); sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true; sg.DisplayOrder = 40
                 local holder = Instance.new("Frame", sg)
@@ -1995,24 +2120,29 @@ function StartScript(plf)
                 _G.__zeva_killFeedGui = {sg = sg, holder = holder}
             end
             local kf = _G.__zeva_killFeedGui
-            local sig = #killFeed .. ":"
-            for i = 1, #killFeed do sig = sig .. killFeed[i].name .. "|" end
-            if sig ~= killFeedSig or removedAny then
-                killFeedSig = sig
-                for _, ch in ipairs(kf.holder:GetChildren()) do if ch:IsA("TextLabel") then ch:Destroy() end end
-                for i, it in ipairs(killFeed) do
-                    local lbl = Instance.new("TextLabel", kf.holder)
-                    lbl.Size, lbl.BackgroundColor3, lbl.BackgroundTransparency = UDim2.new(1,0,0,22), TH.Bg, 0.3
-                    lbl.TextColor3, lbl.Font, lbl.TextSize, lbl.Text, lbl.BorderSizePixel, lbl.LayoutOrder =
-                        TH.Text, FONTB, 11, "×  "..it.name, 0, i
-                    round(lbl, 4)
+            if removedAny or #killFeed ~= lastKFCount then
+                lastKFCount = #killFeed
+                local sig = tostring(#killFeed)
+                for i = 1, #killFeed do sig = sig .. "|" .. killFeed[i].name end
+                if sig ~= killFeedSig then
+                    killFeedSig = sig
+                    for _, ch in ipairs(kf.holder:GetChildren()) do if ch:IsA("TextLabel") then ch:Destroy() end end
+                    for i, it in ipairs(killFeed) do
+                        local lbl = Instance.new("TextLabel", kf.holder)
+                        lbl.Size, lbl.BackgroundColor3, lbl.BackgroundTransparency = UDim2.new(1,0,0,22), TH.Bg, 0.3
+                        lbl.TextColor3, lbl.Font, lbl.TextSize, lbl.Text, lbl.BorderSizePixel, lbl.LayoutOrder =
+                            TH.Text, FONTB, 11, "×  "..it.name, 0, i
+                        round(lbl, 4)
+                    end
                 end
             end
             if not kf.sg.Enabled then kf.sg.Enabled = true end
-        elseif _G.__zeva_killFeedGui and _G.__zeva_killFeedGui.sg.Enabled then _G.__zeva_killFeedGui.sg.Enabled = false end
+        elseif _G.__zeva_killFeedGui and _G.__zeva_killFeedGui.sg and _G.__zeva_killFeedGui.sg.Enabled then
+            _G.__zeva_killFeedGui.sg.Enabled = false
+        end
 
         if cfg.Radar then
-            if not _G.__zeva_radarGui then
+            if not _G.__zeva_radarGui or not _G.__zeva_radarGui.sg or not _G.__zeva_radarGui.sg.Parent then
                 local sg = Instance.new("ScreenGui", p.PlayerGui)
                 sg.Name = "zeva_radar_"..tostring(math.random(1e6,9e6)); sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true; sg.DisplayOrder = 40
                 local frame = Instance.new("Frame", sg)
@@ -2038,37 +2168,42 @@ function StartScript(plf)
             local cosY, sinY = math.cos(yaw), math.sin(yaw)
             local dots = rd.dots
             local idx = 0
-            for _, pl in pairs(P:GetPlayers()) do
-                if pl ~= p and pl.Character then
-                    local hrp = pl.Character:FindFirstChild("HumanoidRootPart")
-                    if hrp then
-                        local rel = hrp.Position - camPos
-                        local dx, dz = rel.X, rel.Z
-                        local dist = math.sqrt(dx*dx + dz*dz)
-                        if dist < range then
-                            idx = idx + 1
-                            local dot = dots[idx]
-                            if not dot or not dot.Parent then
-                                dot = Instance.new("Frame", rd.holder)
-                                dot.Size, dot.BackgroundColor3, dot.BorderSizePixel = UDim2.new(0,6,0,6), TH.Danger, 0
-                                round(dot, 3); dots[idx] = dot
+            for pl in pairs(cachedPlayers) do
+                if pl ~= p then
+                    local ch = pl.Character
+                    if ch then
+                        local hrp = ch:FindFirstChild("HumanoidRootPart")
+                        if hrp then
+                            local rel = hrp.Position - camPos
+                            local dx, dz = rel.X, rel.Z
+                            local dist = math.sqrt(dx*dx + dz*dz)
+                            if dist < range then
+                                idx = idx + 1
+                                local dot = dots[idx]
+                                if not dot or not dot.Parent then
+                                    dot = Instance.new("Frame", rd.holder)
+                                    dot.Size, dot.BackgroundColor3, dot.BorderSizePixel = UDim2.new(0,6,0,6), TH.Danger, 0
+                                    round(dot, 3); dots[idx] = dot
+                                end
+                                local rx = dx * cosY - dz * sinY
+                                local rz = dx * sinY + dz * cosY
+                                local sx = half + (rx / range) * half
+                                local sy = half - (rz / range) * half
+                                dot.Position = UDim2.new(0, sx - 3, 0, sy - 3)
+                                dot.Visible = true
                             end
-                            local rx = dx * cosY - dz * sinY
-                            local rz = dx * sinY + dz * cosY
-                            local sx = half + (rx / range) * half
-                            local sy = half - (rz / range) * half
-                            dot.Position = UDim2.new(0, sx - 3, 0, sy - 3)
-                            dot.Visible = true
                         end
                     end
                 end
             end
             for i = idx + 1, #dots do if dots[i] then dots[i].Visible = false end end
             if not rd.sg.Enabled then rd.sg.Enabled = true end
-        elseif _G.__zeva_radarGui and _G.__zeva_radarGui.sg.Enabled then _G.__zeva_radarGui.sg.Enabled = false end
+        elseif _G.__zeva_radarGui and _G.__zeva_radarGui.sg and _G.__zeva_radarGui.sg.Enabled then
+            _G.__zeva_radarGui.sg.Enabled = false
+        end
 
         if cfg.FPSOverlay then
-            if not _G.__zeva_fpsGui then
+            if not _G.__zeva_fpsGui or not _G.__zeva_fpsGui.sg or not _G.__zeva_fpsGui.sg.Parent then
                 local sg = Instance.new("ScreenGui", p.PlayerGui)
                 sg.Name = "zeva_fps_"..tostring(math.random(1e6,9e6)); sg.ResetOnSpawn = false; sg.IgnoreGuiInset = true; sg.DisplayOrder = 40
                 local lbl = Instance.new("TextLabel", sg)
@@ -2083,7 +2218,9 @@ function StartScript(plf)
             local txt = "FPS: "..fpsValue.."   Ping: "..pingValue.."ms"
             if fg.lbl.Text ~= txt then fg.lbl.Text = txt end
             if not fg.sg.Enabled then fg.sg.Enabled = true end
-        elseif _G.__zeva_fpsGui and _G.__zeva_fpsGui.sg.Enabled then _G.__zeva_fpsGui.sg.Enabled = false end
+        elseif _G.__zeva_fpsGui and _G.__zeva_fpsGui.sg and _G.__zeva_fpsGui.sg.Enabled then
+            _G.__zeva_fpsGui.sg.Enabled = false
+        end
     end)
 
     task.spawn(function()
@@ -2093,7 +2230,7 @@ function StartScript(plf)
                 local now = tick()
                 if now - lastT > cfg.Dly then
                     local vs = c.ViewportSize
-                    local scx, scy = vs.X*0.5, vs.Y*0.5
+                    local scx, scy = math.floor(vs.X*0.5), math.floor(vs.Y*0.5)
                     local ray = c:ViewportPointToRay(scx, scy)
                     local rp = RaycastParams.new()
                     rp.FilterDescendantsInstances = {p.Character, c}
@@ -2122,19 +2259,22 @@ function StartScript(plf)
         end
     end)
 
-    P.PlayerRemoving:Connect(function(pl)
+    reg(P.PlayerRemoving:Connect(function(pl)
         local d = dr[pl]
         if d then
-            pcall(function() if d.B then d.B:Remove() end end); pcall(function() if d.HB then d.HB:Remove() end end)
-            pcall(function() if d.HM then d.HM:Remove() end end); pcall(function() if d.D then d.D:Remove() end end)
-            pcall(function() if d.T then d.T:Remove() end end); pcall(function() if d.LT then d.LT:Remove() end end)
+            pcall(function() if d.B  then d.B:Remove()  end end)
+            pcall(function() if d.HB then d.HB:Remove() end end)
+            pcall(function() if d.HM then d.HM:Remove() end end)
+            pcall(function() if d.D  then d.D:Remove()  end end)
+            pcall(function() if d.T  then d.T:Remove()  end end)
+            pcall(function() if d.LT then d.LT:Remove() end end)
             for _, l in pairs(d.L) do pcall(function() if l then l:Remove() end end) end
             dr[pl] = nil
         end
         local hc = hitChams[pl]
         if hc then pcall(function() hc.sq:Remove() end); hitChams[pl] = nil end
         lastHealth[pl] = nil; velHist[pl] = nil
-    end)
+    end))
 end
 
 buildSelector()
