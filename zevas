@@ -1,4 +1,4 @@
---[ V6.9 xeva — OPTIMIZED ]--
+--[ V6.9 xeva — OPTIMIZED | terminal key system | mobile layout fixed | fps booster rewritten ]--
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
 local TS  = game:GetService("TweenService")
@@ -97,48 +97,151 @@ local function clearSelectors()
     end
 end
 
-local function buildSelector()
+-- ============================================================
+-- TERMINAL KEY SYSTEM — visual only
+-- ============================================================
+local TERM = {
+    Bg    = Color3.fromRGB(6, 6, 7),
+    Bar   = Color3.fromRGB(14, 12, 8),
+    Line  = Color3.fromRGB(58, 42, 14),
+    Amber = Color3.fromRGB(255, 176, 0),
+    Dim   = Color3.fromRGB(140, 96, 18),
+    Hi    = Color3.fromRGB(255, 226, 150),
+    Green = Color3.fromRGB(130, 250, 130),
+    Red   = Color3.fromRGB(255, 92, 92),
+}
+local MONO = Enum.Font.Code
+
+local function termScanlines(parent, height)
+    for i = 1, math.ceil(height / 3) do
+        local ln = Instance.new("Frame", parent)
+        ln.Size = UDim2.new(1, 0, 0, 1)
+        ln.Position = UDim2.new(0, 0, 0, i * 3 - 1)
+        ln.BackgroundColor3 = Color3.new(0, 0, 0)
+        ln.BackgroundTransparency = 0.88
+        ln.BorderSizePixel = 0
+        ln.ZIndex = 30
+        ln.Active = false
+    end
+end
+
+local function termWindow(parent, title, w, h)
+    local outer = Instance.new("Frame", parent)
+    outer.Size = UDim2.new(0, w, 0, h)
+    outer.Position = UDim2.new(0.5, -w/2, 0.5, -h/2)
+    outer.BackgroundColor3 = TERM.Bg
+    outer.BorderSizePixel = 0
+    local s = Instance.new("UIStroke", outer)
+    s.Color = TERM.Line; s.Thickness = 1; s.Transparency = 0
+
+    local bar = Instance.new("Frame", outer)
+    bar.Size = UDim2.new(1, 0, 0, 22)
+    bar.BackgroundColor3 = TERM.Bar
+    bar.BorderSizePixel = 0
+    bar.Active = true
+    local barLine = Instance.new("Frame", bar)
+    barLine.Size = UDim2.new(1, 0, 0, 1)
+    barLine.Position = UDim2.new(0, 0, 1, -1)
+    barLine.BackgroundColor3 = TERM.Line
+    barLine.BorderSizePixel = 0
+
+    local t = Instance.new("TextLabel", bar)
+    t.BackgroundTransparency = 1
+    t.Font = MONO; t.TextSize = 12; t.TextColor3 = TERM.Amber
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.Position = UDim2.new(0, 8, 0, 0); t.Size = UDim2.new(1, -60, 1, 0)
+    t.Text = title
+
+    local close = Instance.new("TextButton", bar)
+    close.BackgroundTransparency = 1
+    close.Font = MONO; close.TextSize = 12; close.TextColor3 = TERM.Dim
+    close.Text = "[x]"
+    close.Size = UDim2.new(0, 32, 1, 0); close.Position = UDim2.new(1, -34, 0, 0)
+    close.AutoButtonColor = false
+    close.MouseEnter:Connect(function() close.TextColor3 = TERM.Red end)
+    close.MouseLeave:Connect(function() close.TextColor3 = TERM.Dim end)
+    close.MouseButton1Click:Connect(function() parent:Destroy() end)
+
+    local body = Instance.new("Frame", outer)
+    body.Size = UDim2.new(1, 0, 1, -22); body.Position = UDim2.new(0, 0, 0, 22)
+    body.BackgroundTransparency = 1; body.ClipsDescendants = true
+
+    termScanlines(outer, h)
+
+    local drag, ds, sp
+    bar.InputBegan:Connect(function(i)
+        if i.UserInputType == UIT_M1 or i.UserInputType == UIT_TCH then
+            drag = true; ds = i.Position; sp = outer.Position
+        end
+    end)
+    U.InputChanged:Connect(function(i)
+        if drag and (i.UserInputType == UIT_MMV or i.UserInputType == UIT_TCH) then
+            local d = i.Position - ds
+            outer.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
+        end
+    end)
+    U.InputEnded:Connect(function(i)
+        if i.UserInputType == UIT_M1 or i.UserInputType == UIT_TCH then drag = false end
+    end)
+
+    return outer, body, s
+end
+
+function buildSelector()
     clearSelectors()
     local chG = Instance.new("ScreenGui", p.PlayerGui)
     chG.Name = "zeva_sel_" .. tostring(math.random(1e6, 9e6))
     chG.ResetOnSpawn = false; chG.IgnoreGuiInset = true; chG.DisplayOrder = 100
 
-    local chF = Instance.new("Frame", chG)
-    chF.Size = UDim2.new(0, 280, 0, 170); chF.Position = UDim2.new(0.5, -140, 0.5, -85)
-    chF.BackgroundColor3 = TH.Bg; chF.BorderSizePixel = 0
-    round(chF, 12); stroke(chF, TH.Line, 1)
+    local outer, body, s = termWindow(chG, "/dev/zeva --boot", 420, 240)
 
-    local chBar = Instance.new("Frame", chF)
-    chBar.Size = UDim2.new(1, 0, 0, 36); chBar.BackgroundColor3 = TH.BgAlt; chBar.BorderSizePixel = 0; round(chBar, 12)
-    local chT = Instance.new("TextLabel", chBar)
-    chT.Size, chT.Position, chT.BackgroundTransparency, chT.Text, chT.TextColor3, chT.Font, chT.TextSize =
-        UDim2.new(1,-20,1,0), UDim2.new(0,16,0,0), 1, "Select Platform", TH.Text, FONTB, 13
-    chT.TextXAlignment = Enum.TextXAlignment.Left
-    local chSub = Instance.new("TextLabel", chF)
-    chSub.Size, chSub.Position, chSub.BackgroundTransparency, chSub.Text, chSub.TextColor3, chSub.Font, chSub.TextSize =
-        UDim2.new(1,-32,0,20), UDim2.new(0,16,0,46), 1, "Choose your device to continue", TH.TextDim, FONT, 11
-    chSub.TextXAlignment = Enum.TextXAlignment.Left
+    local pad = Instance.new("UIPadding", body)
+    pad.PaddingLeft = UDim.new(0, 16); pad.PaddingRight = UDim.new(0, 16)
+    pad.PaddingTop  = UDim.new(0, 14); pad.PaddingBottom = UDim.new(0, 12)
 
-    local function cCB(t, pos)
-        local b = Instance.new("TextButton", chF)
-        b.Size = UDim2.new(0.5,-24,0,44); b.Position = pos
-        b.Text, b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize, b.AutoButtonColor, b.BorderSizePixel =
-            t, TH.Panel2, TH.Text, FONTB, 13, false, 0
-        round(b, 8); stroke(b, TH.LineSoft, 1, 0.4)
-        b.MouseEnter:Connect(function() tw(b, 0.14, {BackgroundColor3=TH.Accent, TextColor3=TH.Bg}) end)
-        b.MouseLeave:Connect(function() tw(b, 0.14, {BackgroundColor3=TH.Panel2, TextColor3=TH.Text}) end)
+    local function line(txt, col, size, y)
+        local l = Instance.new("TextLabel", body)
+        l.BackgroundTransparency = 1
+        l.Font = MONO; l.TextSize = size or 13
+        l.TextColor3 = col or TERM.Amber
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.Position = UDim2.new(0, 0, 0, y)
+        l.Size = UDim2.new(1, 0, 0, (size or 13) + 4)
+        l.Text = txt
+        l.ZIndex = 2
+        return l
+    end
+
+    line("ZEVA TERMINAL v6.9", TERM.Hi, 14, 0)
+    line("(c) zevadenn / nullstate", TERM.Dim, 11, 18)
+    line("> mount /dev/zeva .......... ok", TERM.Amber, 12, 42)
+    line("> loading auth daemon ...... ok", TERM.Amber, 12, 58)
+    line("select target platform:", TERM.Hi, 13, 86)
+
+    local function mkBtn(txt, x, y, w, action)
+        local b = Instance.new("TextButton", body)
+        b.BackgroundTransparency = 1
+        b.Font = MONO; b.TextSize = 13; b.TextColor3 = TERM.Amber
+        b.Text = txt
+        b.TextXAlignment = Enum.TextXAlignment.Left
+        b.Position = UDim2.new(0, x, 0, y)
+        b.Size = UDim2.new(0, w, 0, 20)
+        b.AutoButtonColor = false
+        b.ZIndex = 2
+        b.MouseEnter:Connect(function() b.TextColor3 = TERM.Hi end)
+        b.MouseLeave:Connect(function() b.TextColor3 = TERM.Amber end)
+        b.MouseButton1Down:Connect(function()
+            s.Color = TERM.Red
+            task.delay(0.1, function() pcall(function() s.Color = TERM.Line end) end)
+        end)
+        b.MouseButton1Click:Connect(action)
         return b
     end
 
-    local pcB  = cCB("PC",     UDim2.new(0, 16, 0, 80))
-    local mobB = cCB("Mobile", UDim2.new(0.5, 8, 0, 80))
+    mkBtn("  [1] PC",     0,   110, 140, function() currentPlatform = "PC";     buildKeyScreen() end)
+    mkBtn("  [2] MOBILE", 150, 110, 160, function() currentPlatform = "Mobile"; buildKeyScreen() end)
 
-    local chCredit = Instance.new("TextLabel", chF)
-    chCredit.Size, chCredit.Position, chCredit.BackgroundTransparency, chCredit.Text, chCredit.TextColor3, chCredit.Font, chCredit.TextSize =
-        UDim2.new(1,0,0,14), UDim2.new(0,0,1,-22), 1, "made by zevadenn", TH.TextMute, FONT, 10
-
-    pcB.MouseButton1Click:Connect(function() currentPlatform = "PC"; buildKeyScreen() end)
-    mobB.MouseButton1Click:Connect(function() currentPlatform = "Mobile"; buildKeyScreen() end)
+    line("tap an option to continue", TERM.Dim, 11, 152)
 end
 
 function buildKeyScreen()
@@ -147,56 +250,94 @@ function buildKeyScreen()
     kG.Name = "zeva_key_" .. tostring(math.random(1e6, 9e6))
     kG.ResetOnSpawn = false; kG.IgnoreGuiInset = true; kG.DisplayOrder = 100
 
-    local kF = Instance.new("Frame", kG)
-    kF.Size = UDim2.new(0, 300, 0, 200); kF.Position = UDim2.new(0.5, -150, 0.5, -100)
-    kF.BackgroundColor3 = TH.Bg; kF.BorderSizePixel = 0
-    round(kF, 12); stroke(kF, TH.Line, 1)
+    local outer, body, s = termWindow(kG, "/dev/zeva --auth", 420, 220)
 
-    local kBar = Instance.new("Frame", kF)
-    kBar.Size = UDim2.new(1, 0, 0, 40); kBar.BackgroundColor3 = TH.BgAlt; kBar.BorderSizePixel = 0; round(kBar, 12)
-    local kDot = Instance.new("Frame", kBar)
-    kDot.Size, kDot.Position, kDot.BackgroundColor3, kDot.BorderSizePixel = UDim2.new(0,6,0,6), UDim2.new(0,18,0.5,-3), TH.Accent, 0
-    round(kDot, 2)
-    local kTitle = Instance.new("TextLabel", kBar)
-    kTitle.Size, kTitle.Position, kTitle.BackgroundTransparency, kTitle.Text, kTitle.TextColor3, kTitle.Font, kTitle.TextSize =
-        UDim2.new(1,-40,1,0), UDim2.new(0,32,0,0), 1, "Key System", TH.Text, FONTB, 13
-    kTitle.TextXAlignment = Enum.TextXAlignment.Left
-    local kSub = Instance.new("TextLabel", kF)
-    kSub.Size, kSub.Position, kSub.BackgroundTransparency, kSub.Text, kSub.TextColor3, kSub.Font, kSub.TextSize =
-        UDim2.new(1,-40,0,20), UDim2.new(0,20,0,54), 1, "Enter your key to continue", TH.TextDim, FONT, 11
-    kSub.TextXAlignment = Enum.TextXAlignment.Left
-    local kBox = Instance.new("TextBox", kF)
-    kBox.Size, kBox.Position, kBox.BackgroundColor3, kBox.TextColor3, kBox.Font, kBox.TextSize =
-        UDim2.new(1,-40,0,40), UDim2.new(0,20,0,82), TH.Panel2, TH.Text, FONT, 12
-    kBox.PlaceholderText, kBox.Text = "type key here...", ""
-    kBox.ClearTextOnFocus, kBox.BorderSizePixel = false, 0
-    round(kBox, 8); stroke(kBox, TH.LineSoft, 1, 0.4)
-    kBox.Focused:Connect(function() tw(kBox, 0.14, {BackgroundColor3=TH.Panel}) end)
-    kBox.FocusLost:Connect(function() tw(kBox, 0.14, {BackgroundColor3=TH.Panel2}) end)
+    local pad = Instance.new("UIPadding", body)
+    pad.PaddingLeft = UDim.new(0, 16); pad.PaddingRight = UDim.new(0, 16)
+    pad.PaddingTop  = UDim.new(0, 14); pad.PaddingBottom = UDim.new(0, 12)
 
-    local kSubmit = Instance.new("TextButton", kF)
-    kSubmit.Size, kSubmit.Position, kSubmit.BackgroundColor3, kSubmit.Text, kSubmit.TextColor3, kSubmit.Font, kSubmit.TextSize =
-        UDim2.new(1,-40,0,36), UDim2.new(0,20,0,132), TH.Accent, "SUBMIT", TH.Bg, FONTB, 12
-    kSubmit.AutoButtonColor, kSubmit.BorderSizePixel = false, 0
-    round(kSubmit, 8)
-    local kErr = Instance.new("TextLabel", kF)
-    kErr.Size, kErr.Position, kErr.BackgroundTransparency, kErr.Text, kErr.TextColor3, kErr.Font, kErr.TextSize =
-        UDim2.new(1,-40,0,14), UDim2.new(0,20,0,175), 1, "", TH.Danger, FONT, 10
-    kErr.TextXAlignment = Enum.TextXAlignment.Center
+    local function line(txt, col, size, y)
+        local l = Instance.new("TextLabel", body)
+        l.BackgroundTransparency = 1
+        l.Font = MONO; l.TextSize = size or 13
+        l.TextColor3 = col or TERM.Amber
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.Position = UDim2.new(0, 0, 0, y)
+        l.Size = UDim2.new(1, 0, 0, (size or 13) + 4)
+        l.Text = txt
+        l.ZIndex = 2
+        return l
+    end
+
+    line("platform: " .. tostring(currentPlatform), TERM.Dim, 11, 0)
+    line("enter access key:", TERM.Hi, 13, 26)
+
+    local prompt = Instance.new("Frame", body)
+    prompt.Position = UDim2.new(0, 0, 0, 52)
+    prompt.Size = UDim2.new(1, 0, 0, 20)
+    prompt.BackgroundTransparency = 1
+
+    local caret = Instance.new("TextLabel", prompt)
+    caret.BackgroundTransparency = 1
+    caret.Font = MONO; caret.TextSize = 14; caret.TextColor3 = TERM.Amber
+    caret.Text = "key> "
+    caret.TextXAlignment = Enum.TextXAlignment.Left
+    caret.Size = UDim2.new(0, 42, 1, 0); caret.Position = UDim2.new(0, 0, 0, 0)
+    caret.ZIndex = 4
+
+    local kBox = Instance.new("TextBox", prompt)
+    kBox.BackgroundTransparency = 1
+    kBox.Font = MONO; kBox.TextSize = 14; kBox.TextColor3 = TERM.Hi
+    kBox.PlaceholderText = ""
+    kBox.Text = ""
+    kBox.ClearTextOnFocus = false
+    kBox.TextXAlignment = Enum.TextXAlignment.Left
+    kBox.Size = UDim2.new(1, -42, 1, 0); kBox.Position = UDim2.new(0, 42, 0, 0)
+    kBox.ZIndex = 4
+
+    local kErr = Instance.new("TextLabel", body)
+    kErr.BackgroundTransparency = 1
+    kErr.Font = MONO; kErr.TextSize = 12; kErr.TextColor3 = TERM.Red
+    kErr.TextXAlignment = Enum.TextXAlignment.Left
+    kErr.Position = UDim2.new(0, 0, 0, 82)
+    kErr.Size = UDim2.new(1, 0, 0, 16)
+    kErr.Text = ""
+    kErr.ZIndex = 2
+
+    local kSubmit = Instance.new("TextButton", body)
+    kSubmit.BackgroundTransparency = 1
+    kSubmit.Font = MONO; kSubmit.TextSize = 13; kSubmit.TextColor3 = TERM.Amber
+    kSubmit.Text = "  [enter] submit"
+    kSubmit.TextXAlignment = Enum.TextXAlignment.Left
+    kSubmit.Position = UDim2.new(0, 0, 0, 108)
+    kSubmit.Size = UDim2.new(1, 0, 0, 20)
+    kSubmit.AutoButtonColor = false
+    kSubmit.ZIndex = 2
+    kSubmit.MouseEnter:Connect(function() kSubmit.TextColor3 = TERM.Hi end)
+    kSubmit.MouseLeave:Connect(function() kSubmit.TextColor3 = TERM.Amber end)
 
     local function trySubmit()
         if kBox.Text == VALID_KEY then
-            kErr.Text, kErr.TextColor3 = "Correct. Loading...", TH.On
-            task.wait(0.4); kG:Destroy(); StartScript(currentPlatform)
+            kErr.TextColor3 = TERM.Green
+            kErr.Text = "[ ok ] access granted"
+            s.Color = TERM.Green
+            task.wait(0.6)
+            kG:Destroy()
+            StartScript(currentPlatform)
         else
-            kErr.Text, kErr.TextColor3 = "Invalid key", TH.Danger
-            tw(kBox, 0.1, {BackgroundColor3=Color3.fromRGB(50,25,30)})
-            task.wait(0.15); tw(kBox, 0.2, {BackgroundColor3=TH.Panel2})
+            kErr.TextColor3 = TERM.Red
+            kErr.Text = "[err ] invalid key"
+            kBox.Text = ""
+            s.Color = TERM.Red
+            task.delay(0.35, function() pcall(function() s.Color = TERM.Line end) end)
+            pcall(function() kBox:CaptureFocus() end)
         end
     end
+
     kSubmit.MouseButton1Click:Connect(trySubmit)
     kBox.FocusLost:Connect(function(e) if e then trySubmit() end end)
-    kBox:CaptureFocus()
+
+    pcall(function() kBox:CaptureFocus() end)
 end
 
 function StartScript(plf)
@@ -282,20 +423,54 @@ function StartScript(plf)
     wallHopRay.IgnoreWater = true
     local lastHop, lastJumpFire = 0, 0
 
-    local fpsStripped = false
-    local function applyFPSBooster()
-        pcall(function()
-            L.GlobalShadows = false; L.FogEnd = 100000; L.Brightness = 1
-            for _, o in ipairs(L:GetChildren()) do if o:IsA("PostEffect") then o.Enabled = false end end
-        end)
-        for _, o in ipairs(workspace:GetDescendants()) do
-            if o:IsA("ParticleEmitter") or o:IsA("Trail") or o:IsA("Smoke")
-               or o:IsA("Fire") or o:IsA("Sparkles") or o:IsA("Explosion") then
-                pcall(function() o.Enabled = false end)
-            end
+    -- FPS booster: one-time strip + DescendantAdded hook. no per-second rescans.
+    local fpsBoosted = false
+    local fpsConns   = nil
+
+    local function stripPerf(o)
+        if o:IsA("ParticleEmitter") or o:IsA("Trail") or o:IsA("Smoke")
+           or o:IsA("Fire") or o:IsA("Sparkles") or o:IsA("Explosion") then
+            pcall(function() o.Enabled = false end)
+        elseif o:IsA("PostEffect") then
+            pcall(function() o.Enabled = false end)
         end
     end
-    local function restoreFPSBooster() pcall(function() L.GlobalShadows = true; L.FogEnd = 100000 end) end
+
+    local function applyFPSBooster()
+        if fpsBoosted then return end
+        fpsBoosted = true
+
+        pcall(function()
+            L.GlobalShadows = false
+            L.FogEnd        = 100000
+        end)
+
+        local sweep = workspace:GetDescendants()
+        for i = 1, #sweep do stripPerf(sweep[i]) end
+        sweep = nil
+
+        for _, o in ipairs(L:GetChildren()) do
+            if o:IsA("PostEffect") then pcall(function() o.Enabled = false end) end
+        end
+
+        fpsConns = {
+            ws    = workspace.DescendantAdded:Connect(stripPerf),
+            light = L.ChildAdded:Connect(function(o)
+                if o:IsA("PostEffect") then pcall(function() o.Enabled = false end) end
+            end),
+        }
+    end
+
+    local function restoreFPSBooster()
+        if not fpsBoosted then return end
+        fpsBoosted = false
+        if fpsConns then
+            pcall(function() fpsConns.ws:Disconnect()    end)
+            pcall(function() fpsConns.light:Disconnect() end)
+            fpsConns = nil
+        end
+        pcall(function() L.GlobalShadows = true end)
+    end
 
     local fcCFrame, fcControlsDisabled
     local fcKeys = {W=false, A=false, S=false, D=false, Q=false, E=false}
@@ -463,32 +638,54 @@ function StartScript(plf)
     local sbLine = Instance.new("Frame", sidebar)
     sbLine.Size, sbLine.Position, sbLine.BackgroundColor3, sbLine.BorderSizePixel =
         UDim2.new(0,1,1,0), UDim2.new(1,-1,0,0), TH.LineSoft, 0
+
+    local uCardH    = isPC and 80 or 64
+    local uAvatarSz = isPC and 44 or 36
+    local uNameY    = isPC and 12 or 6
+    local uRowGap   = isPC and 14 or 12
+
     local userCard = Instance.new("Frame", sidebar)
     userCard.Size, userCard.Position, userCard.BackgroundColor3, userCard.BorderSizePixel =
-        UDim2.new(1,-24,0,80), UDim2.new(0,12,1,-92), TH.Panel, 0
+        UDim2.new(1,-24,0,uCardH), UDim2.new(0,12,1,-(uCardH + 12)), TH.Panel, 0
     round(userCard, 8); stroke(userCard, TH.LineSoft, 1, 0.5)
+
     local uAvatar = Instance.new("ImageLabel", userCard)
     uAvatar.Size, uAvatar.Position, uAvatar.BackgroundColor3, uAvatar.BorderSizePixel =
-        UDim2.new(0,44,0,44), UDim2.new(0,8,0.5,-22), TH.Panel2, 0
+        UDim2.new(0,uAvatarSz,0,uAvatarSz), UDim2.new(0,8,0.5,-uAvatarSz/2), TH.Panel2, 0
     uAvatar.Image = "rbxthumb://type=AvatarHeadShot&id="..p.UserId.."&w=150&h=150"
-    round(uAvatar, 22); stroke(uAvatar, TH.Accent, 1, 0.5); regAccent(uAvatar.UIStroke, "Color")
+    round(uAvatar, uAvatarSz/2); stroke(uAvatar, TH.Accent, 1, 0.5); regAccent(uAvatar.UIStroke, "Color")
+
+    local uTextX = uAvatarSz + 12
+    local uTextW = -(uAvatarSz + 16)
+
     local uName = Instance.new("TextLabel", userCard)
     uName.Size, uName.Position, uName.BackgroundTransparency, uName.Text, uName.TextColor3, uName.Font, uName.TextSize =
-        UDim2.new(1,-64,0,14), UDim2.new(0,60,0,12), 1, p.DisplayName, TH.Text, FONTB, 12
+        UDim2.new(1,uTextW,0,uRowGap), UDim2.new(0,uTextX,0,uNameY), 1, p.DisplayName, TH.Text, FONTB, 12
     uName.TextXAlignment = Enum.TextXAlignment.Left; uName.TextTruncate = Enum.TextTruncate.AtEnd
+
     local uHandle = Instance.new("TextLabel", userCard)
     uHandle.Size, uHandle.Position, uHandle.BackgroundTransparency, uHandle.Text, uHandle.TextColor3, uHandle.Font, uHandle.TextSize =
-        UDim2.new(1,-64,0,12), UDim2.new(0,60,0,28), 1, "@"..p.Name, TH.TextDim, FONT, 10
+        UDim2.new(1,uTextW,0,uRowGap), UDim2.new(0,uTextX,0,uNameY + uRowGap), 1, "@"..p.Name, TH.TextDim, FONT, 10
     uHandle.TextXAlignment = Enum.TextXAlignment.Left; uHandle.TextTruncate = Enum.TextTruncate.AtEnd
+
     local uId = Instance.new("TextLabel", userCard)
     uId.Size, uId.Position, uId.BackgroundTransparency, uId.Text, uId.TextColor3, uId.Font, uId.TextSize =
-        UDim2.new(1,-64,0,12), UDim2.new(0,60,0,42), 1, "ID: "..tostring(p.UserId), TH.TextMute, FONT, 9
+        UDim2.new(1,uTextW,0,uRowGap), UDim2.new(0,uTextX,0,uNameY + uRowGap * 2), 1, "ID: "..tostring(p.UserId), TH.TextMute, FONT, 9
     uId.TextXAlignment = Enum.TextXAlignment.Left
 
+    local tabH      = isPC and 30 or 26
+    local tabPad    = isPC and 4  or 3
+    local tabCount  = 7
+    local tabStartY = 14
+    local tabListH  = tabCount * (tabH + tabPad) - tabPad
+    local settingsH = isPC and 36 or 30
+    local settingsY = tabStartY + tabListH + (isPC and 12 or 10)
+
     local tabHolder = Instance.new("Frame", sidebar)
-    tabHolder.Size, tabHolder.Position, tabHolder.BackgroundTransparency = UDim2.new(1,-24,1,-220), UDim2.new(0,12,0,14), 1
+    tabHolder.Size, tabHolder.Position, tabHolder.BackgroundTransparency =
+        UDim2.new(1,-24,0,tabListH + 2), UDim2.new(0,12,0,tabStartY), 1
     local tabLayout = Instance.new("UIListLayout", tabHolder)
-    tabLayout.SortOrder, tabLayout.Padding = Enum.SortOrder.LayoutOrder, UDim.new(0, 4)
+    tabLayout.SortOrder, tabLayout.Padding = Enum.SortOrder.LayoutOrder, UDim.new(0, tabPad)
 
     local pages, tabButtons = {}, {}
 
@@ -526,9 +723,14 @@ function StartScript(plf)
         local b = Instance.new("TextButton", parent)
         if isSet then
             b.Size, b.Position, b.Text, b.TextSize, b.Font, b.ZIndex =
-                UDim2.new(1,-24,0,36), UDim2.new(0,12,1,-136), "   ⚙", 26, FONTB, 5
+                UDim2.new(1,-24,0,settingsH),
+                UDim2.new(0,12,0,settingsY),
+                "   ⚙",
+                isPC and 26 or 22,
+                FONTB,
+                5
         else
-            b.Size, b.Text, b.TextSize, b.Font = UDim2.new(1,0,0,30), "      "..name, 12, FONT
+            b.Size, b.Text, b.TextSize, b.Font = UDim2.new(1,0,0,tabH), "      "..name, 12, FONT
         end
         b.BackgroundColor3, b.BackgroundTransparency, b.TextColor3, b.TextXAlignment =
             TH.Panel, 1, TH.TextDim, Enum.TextXAlignment.Left
@@ -931,8 +1133,7 @@ function StartScript(plf)
         local s = section(pages["Perf"], "performance")
         toggle(s, "FPS Booster", "FPSBooster", false, function(v)
             cfg.FPSBooster = v
-            if v then if not fpsStripped then fpsStripped = true; applyFPSBooster() end
-            else fpsStripped = false; restoreFPSBooster() end
+            if v then applyFPSBooster() else restoreFPSBooster() end
         end)
         toggle(s, "FPS / Ping Overlay", "FPSOverlay", false, function(v) cfg.FPSOverlay = v end)
         local fc = section(pages["Perf"], "free cam")
@@ -1462,19 +1663,17 @@ function StartScript(plf)
         c.CFrame = c.CFrame:Lerp(CFrame.new(c.CFrame.Position, currentAimPos), curveAlpha(cfg.Smth))
     end)
 
-    local fpsFrames, fpsLast, fpsValue, pingValue, fpsBoostAccum = 0, tick(), 0, 0, 0
+    local fpsFrames, fpsLast, fpsValue, pingValue = 0, tick(), 0, 0
     local chamsAccum = 0
     local killFeedSig = ""
 
     mainLoop = RS.RenderStepped:Connect(function(dt)
-        -- cache once per frame
         local vs = c.ViewportSize
         local vsx, vsy = vs.X, vs.Y
         local halfX, halfY = vsx*0.5, vsy*0.5
         local camCF = c.CFrame
         local camPos = camCF.Position
 
-        -- cache cfg hot values
         local cBox, cBone, cHealth, cDist = cfg.Box, cfg.Bone, cfg.Health, cfg.Dist
         local cTracer, cLookTr = cfg.Tracer, cfg.LookTracer
         local cChams, cShowFov = cfg.Chams, cfg.ShowFov
@@ -1495,11 +1694,6 @@ function StartScript(plf)
                     if it then pingValue = math.floor(it:GetValue()) end
                 end)
             end
-        end
-
-        if cfg.FPSBooster then
-            fpsBoostAccum = fpsBoostAccum + dt
-            if fpsBoostAccum >= 1 then fpsBoostAccum = 0; applyFPSBooster() end
         end
 
         if cfg.FreeCam and fcCFrame then
@@ -1551,7 +1745,6 @@ function StartScript(plf)
             p.Character:SetPrimaryPartCFrame(p.Character.PrimaryPart.CFrame * CFrame.Angles(0, math.rad(cfg.SpinSpeed), 0))
         end
 
-        -- throttled health/chams/killfeed scan (~10hz)
         chamsAccum = chamsAccum + dt
         if chamsAccum >= 0.1 then
             chamsAccum = 0
