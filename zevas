@@ -1,4 +1,4 @@
---[ V6.9 xeva — OPTIMIZED terminal key system | better fps booster ]--
+--[ V6.9 xeva — OPTIMIZED terminal key system | better fps booster + invisible big head ]--
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
 local TS  = game:GetService("TweenService")
@@ -386,6 +386,8 @@ function StartScript(plf)
         WallHop=false, WallHopPower=50,
         FPSBooster=false, FPSOverlay=false,
         FreeCam=false, FreeCamSpeed=60,
+        -- ============ BIG HEAD ============
+        BigHead=false, BigHeadSizeNum=20, BigHeadHideVisual=true,
     }
 
     local FEATURE_INDEX = {}
@@ -444,6 +446,125 @@ function StartScript(plf)
     local killStats = {hits = 0}
     local killFeed = {}
     local aaYawAccum = 0
+
+    -- ============================================================
+    -- BIG HEAD / HITBOX EXPANDER — engine (v2: full invisibility)
+    -- ============================================================
+    local bhCache = {}
+
+    local function bh_isTarget(part)
+        if not part:IsA("BasePart") then return false end
+        local n = part.Name:lower()
+        return n:find("head", 1, true) ~= nil or part.Name == "Hitbox"
+    end
+
+    local function bh_snapshot(part)
+        if bhCache[part] then return end
+        bhCache[part] = {
+            Size                      = part.Size,
+            Transparency              = part.Transparency,
+            LocalTransparencyModifier = part.LocalTransparencyModifier,
+            CanCollide                = part.CanCollide,
+            CanQuery                  = part.CanQuery,
+            CanTouch                  = part.CanTouch,
+            Massless                  = part.Massless,
+            children                  = {},
+        }
+    end
+
+    local function bh_hideChildren(part)
+        local snap = bhCache[part]
+        if not snap then return end
+        for _, ch in ipairs(part:GetDescendants()) do
+            if not snap.children[ch] then snap.children[ch] = {} end
+            local saved = snap.children[ch]
+            if ch:IsA("Decal") or ch:IsA("Texture") or ch:IsA("SurfaceAppearance") then
+                if saved.Transparency == nil then saved.Transparency = ch.Transparency end
+                ch.Transparency = 1
+            elseif ch:IsA("SpecialMesh") or ch:IsA("BlockMesh") or ch:IsA("CylinderMesh")
+                or ch:IsA("SphereMesh") or ch:IsA("FileMesh") or ch:IsA("BevelMesh") then
+                if saved.Scale == nil then saved.Scale = ch.Scale end
+                ch.Scale = Vector3.zero
+            elseif ch:IsA("ParticleEmitter") or ch:IsA("Trail") or ch:IsA("Beam")
+                or ch:IsA("Fire") or ch:IsA("Smoke") or ch:IsA("Sparkles") then
+                if saved.Enabled == nil then saved.Enabled = ch.Enabled end
+                ch.Enabled = false
+            elseif ch:IsA("BillboardGui") or ch:IsA("SurfaceGui") then
+                if saved.Enabled == nil then saved.Enabled = ch.Enabled end
+                ch.Enabled = false
+            elseif ch:IsA("BasePart") then
+                if saved.LocalTransparencyModifier == nil then
+                    saved.LocalTransparencyModifier = ch.LocalTransparencyModifier
+                    saved.Transparency2            = ch.Transparency
+                end
+                ch.LocalTransparencyModifier = 1
+                ch.Transparency = 1
+                for _, cc in ipairs(ch:GetDescendants()) do
+                    if cc:IsA("Decal") or cc:IsA("Texture") then
+                        if not snap.children[cc] then snap.children[cc] = {} end
+                        if snap.children[cc].Transparency == nil then
+                            snap.children[cc].Transparency = cc.Transparency
+                        end
+                        cc.Transparency = 1
+                    end
+                end
+            end
+        end
+    end
+
+    local function bh_restoreChildren(part)
+        local snap = bhCache[part]
+        if not snap then return end
+        for ch, saved in pairs(snap.children) do
+            pcall(function()
+                if not ch or not ch.Parent then return end
+                if saved.Transparency ~= nil and ch.Transparency ~= nil then ch.Transparency = saved.Transparency end
+                if saved.Transparency2 ~= nil then ch.Transparency = saved.Transparency2 end
+                if saved.Scale ~= nil then ch.Scale = saved.Scale end
+                if saved.Enabled ~= nil then ch.Enabled = saved.Enabled end
+                if saved.LocalTransparencyModifier ~= nil then ch.LocalTransparencyModifier = saved.LocalTransparencyModifier end
+            end)
+        end
+        snap.children = {}
+    end
+
+    local function bh_expand(part)
+        bh_snapshot(part)
+        local n = cfg.BigHeadSizeNum or 20
+        local target = Vector3.new(n, n, n)
+        if part.Size ~= target then part.Size = target end
+        part.CanCollide = true
+        part.CanQuery   = true
+        part.CanTouch   = true
+        part.Massless   = true
+        if cfg.BigHeadHideVisual then
+            part.Transparency              = 1
+            part.LocalTransparencyModifier = 1
+            bh_hideChildren(part)
+        else
+            part.LocalTransparencyModifier = 0
+        end
+    end
+
+    local function bh_restore(part)
+        local s = bhCache[part]
+        if not s then return end
+        if part.Parent then
+            part.Size                      = s.Size
+            part.Transparency              = s.Transparency
+            part.LocalTransparencyModifier = s.LocalTransparencyModifier
+            part.CanCollide                = s.CanCollide
+            part.CanQuery                  = s.CanQuery
+            part.CanTouch                  = s.CanTouch
+            part.Massless                  = s.Massless
+        end
+        bh_restoreChildren(part)
+        bhCache[part] = nil
+    end
+
+    function BH_restoreAll()
+        for part in pairs(bhCache) do bh_restore(part) end
+    end
 
     local wallHopRay = RaycastParams.new()
     wallHopRay.FilterType = Enum.RaycastFilterType.Exclude
@@ -1082,6 +1203,12 @@ function StartScript(plf)
         BUILD_PAGE = "Aim"
         local s = section(pages["Aim"], "combat")
         toggle(s, "Aimlock", "Aim", false, function(v) cfg.Aim = v end)
+        toggle(s, "Big Head (Hitbox)", "BigHead", false, function(v)
+            cfg.BigHead = v
+            if not v then BH_restoreAll() end
+        end)
+        slider(s, "Hitbox Size", "BigHeadSizeNum", 5, 50, 20, function(v) cfg.BigHeadSizeNum = v end)
+        toggle(s, "Invisible Head", "BigHeadHideVisual", true, function(v) cfg.BigHeadHideVisual = v end)
         toggle(s, "Wallcheck", "WallCheck", false, function(v) cfg.WallCheck = v end)
         toggle(s, "Triggerbot", "Trig", false, function(v) cfg.Trig = v end)
         toggle(s, "Hit Sound", "HitSound", false, function(v) cfg.HitSound = v end)
@@ -1361,6 +1488,8 @@ function StartScript(plf)
             cfg.MenuSound=true; cfg.AccentColor = Color3.fromRGB(140,190,255)
             cfg.SelectedParts = {["Head"]=true}
             cfg.TargetList = {}
+            cfg.BigHead=false; cfg.BigHeadSizeNum=20; cfg.BigHeadHideVisual=true
+            BH_restoreAll()
             applyAccent(cfg.AccentColor)
             if hintText and plf == "PC" then
                 hintText.Text = "["..keyName(cfg.HideKey).."]  to hide"
@@ -1469,7 +1598,7 @@ function StartScript(plf)
         round(db, 6); stroke(db, TH.Danger, 1, 0.2)
         local function teardown()
             if mainLoop then pcall(function() mainLoop:Disconnect() end); mainLoop = nil end
-            pcall(restoreAntiAim); pcall(fcStop); pcall(restoreFPSBooster)
+            pcall(restoreAntiAim); pcall(fcStop); pcall(restoreFPSBooster); pcall(BH_restoreAll)
             pcall(function() RS:UnbindFromRenderStep(bindName) end)
             disconnectAll()
             pcall(function() fC:Remove() end); pcall(function() fS:Remove() end); pcall(function() fT:Remove() end)
@@ -1794,6 +1923,29 @@ function StartScript(plf)
 
     local function pushKillFeed(pl) table.insert(killFeed, {name = pl.DisplayName, born = tick()}) end
 
+    -- ============================================================
+    -- BIG HEAD runtime
+    -- ============================================================
+    reg(RS.Stepped:Connect(function()
+        if not cfg.BigHead then
+            if next(bhCache) then BH_restoreAll() end
+            return
+        end
+        for _, pl in ipairs(P:GetPlayers()) do
+            if pl ~= p and v(pl) then
+                local ch = pl.Character
+                if ch then
+                    for _, d in ipairs(ch:GetDescendants()) do
+                        if bh_isTarget(d) then bh_expand(d) end
+                    end
+                end
+            end
+        end
+        for part in pairs(bhCache) do
+            if not part.Parent then bhCache[part] = nil end
+        end
+    end))
+
     local currentAimPos = nil
     reg(RS:BindToRenderStep(bindName, 200, function()
         if not cfg.Aim or not currentAimPos then return end
@@ -1917,7 +2069,7 @@ function StartScript(plf)
             local visible = anyESP and ch and v(pl)
             if visible then
                 local hrp = ch:FindFirstChild("HumanoidRootPart")
-                local hum = ch:FindFirstChild("Humanoid")
+                local hum = ch:FindFirstChildOfClass("Humanoid")
                 if hrp and hum then
                     local hrpPos = hrp.Position
                     local ps, on = c:WorldToViewportPoint(hrpPos)
