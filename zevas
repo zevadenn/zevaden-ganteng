@@ -448,7 +448,7 @@ function StartScript(plf)
     local aaYawAccum = 0
 
     -- ============================================================
-    -- BIG HEAD / HITBOX EXPANDER — engine (v2: full invisibility)
+    -- BIG HEAD / HITBOX EXPANDER — engine (v6: teammate-safe, no-push)
     -- ============================================================
     local bhCache = {}
 
@@ -533,10 +533,10 @@ function StartScript(plf)
         local n = cfg.BigHeadSizeNum or 20
         local target = Vector3.new(n, n, n)
         if part.Size ~= target then part.Size = target end
-        part.CanCollide = true
-        part.CanQuery   = true
-        part.CanTouch   = true
-        part.Massless   = true
+        part.CanCollide = false   -- no physical push — walk through freely
+        part.CanQuery   = true    -- raycasts still register — damage lands
+        part.CanTouch   = false   -- no touch events
+        part.Massless   = true    -- keep rig mass stable
         if cfg.BigHeadHideVisual then
             part.Transparency              = 1
             part.LocalTransparencyModifier = 1
@@ -1734,6 +1734,26 @@ function StartScript(plf)
         return true
     end
 
+    -- BigHead-only filter: teammates ALWAYS excluded, K.O. checked, dead skipped
+    local function bh_valid(pl)
+        if not pl or pl == p then return false end
+        if pl.Team and p.Team and pl.Team == p.Team then return false end
+        if pl:GetAttribute("Team") and p:GetAttribute("Team")
+           and pl:GetAttribute("Team") == p:GetAttribute("Team") then return false end
+        local ch = pl.Character
+        if not ch then return false end
+        local hum = ch:FindFirstChild("Humanoid")
+        if not hum or hum.Health <= 0 then return false end
+        if cfg.KOCheck then
+            local be = ch:FindFirstChild("BodyEffects")
+            if be then
+                local ko = be:FindFirstChild("K.O")
+                if ko and ko.Value then return false end
+            end
+        end
+        return true
+    end
+
     local function vis(pt)
         local rp = RaycastParams.new()
         rp.FilterDescendantsInstances = {p.Character, pt.Parent}
@@ -1924,7 +1944,7 @@ function StartScript(plf)
     local function pushKillFeed(pl) table.insert(killFeed, {name = pl.DisplayName, born = tick()}) end
 
     -- ============================================================
-    -- BIG HEAD runtime
+    -- BIG HEAD runtime (v6: teammate-safe prune + no push)
     -- ============================================================
     reg(RS.Stepped:Connect(function()
         if not cfg.BigHead then
@@ -1932,7 +1952,7 @@ function StartScript(plf)
             return
         end
         for _, pl in ipairs(P:GetPlayers()) do
-            if pl ~= p and v(pl) then
+            if bh_valid(pl) then
                 local ch = pl.Character
                 if ch then
                     for _, d in ipairs(ch:GetDescendants()) do
@@ -1941,8 +1961,13 @@ function StartScript(plf)
                 end
             end
         end
+        -- prune: dead parts, teammates that flipped mid-round, leavers, K.O. players
         for part in pairs(bhCache) do
-            if not part.Parent then bhCache[part] = nil end
+            local ch = part and part.Parent
+            local pl = ch and P:GetPlayerFromCharacter(ch)
+            if not part or not part.Parent or (pl and not bh_valid(pl)) then
+                bh_restore(part)
+            end
         end
     end))
 
