@@ -1,4 +1,21 @@
---[ V6.9 xeva — OPTIMIZED terminal key system | better fps booster + invisible big head ]--
+--[[
+  Zeva v6.9.1 — patched build
+  Fixes applied:
+    [F1]  v(pl) TeamCheck nil-team guard
+    [F2]  PartColors cleared on rebuild (Change Device no longer bricks Body tab)
+    [F3]  FOV shape exclusivity (only one Drawing visible at a time)
+    [F4]  keybind listener respects gameProcessedEvent
+    [F5]  BigHeadHideVisual toggle-off restores children
+    [F6]  FreeCam / Aim CFrame priority split (no overwrite fight)
+    [F7]  RemoteEvent override replaced with __namecall hook w/ fallback
+    [F8]  Triggerbot fire-rate floor
+    [F9]  bh_isTarget exact-name whitelist
+    [F10] Silent sound pack no longer feeds "" to SoundId
+    [F11] currentPlatform localized
+    [F12] refreshPlayers targets prefixed rows only
+    [F13] FreeCam key listeners gated on cfg.FreeCam
+    [F14] Reset now clears PartColors
+--]]
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
 local TS  = game:GetService("TweenService")
@@ -53,10 +70,27 @@ if not CAP.Drawing then
     return
 end
 
+-- [F7] RemoteEvent firewall — try modern hookmetamethod, fall back to silent noop.
+-- Direct method reassignment is dead on modern Roblox; this actually works.
 pcall(function()
+    local protected = {}
     for _, name in ipairs({"MobileAntiCheatRE", "aSKbG03ajK"}) do
         local r = ReplicatedStorage:FindFirstChild(name)
-        if r and r:IsA("RemoteEvent") then pcall(function() r.FireServer = function() end end) end
+        if r and r:IsA("RemoteEvent") then protected[r] = true end
+    end
+    if next(protected) == nil then return end
+    local mt = getrawmetatable(game)
+    if mt then
+        local oldNamecall = mt.__namecall
+        setreadonly(mt, false)
+        mt.__namecall = newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            if method == "FireServer" or method == "InvokeServer" then
+                if protected[self] then return nil end
+            end
+            return oldNamecall(self, ...)
+        end)
+        setreadonly(mt, true)
     end
 end)
 
@@ -97,9 +131,9 @@ local function clearSelectors()
     end
 end
 
--- ============================================================
--- TERMINAL KEY SYSTEM
--- ============================================================
+-- [F11] currentPlatform is now a proper upvalue, not a global.
+local currentPlatform = "PC"
+
 local TERM = {
     Bg    = Color3.fromRGB(6, 6, 7),
     Bar   = Color3.fromRGB(14, 12, 8),
@@ -386,7 +420,6 @@ function StartScript(plf)
         WallHop=false, WallHopPower=50,
         FPSBooster=false, FPSOverlay=false,
         FreeCam=false, FreeCamSpeed=60,
-        -- ============ BIG HEAD ============
         BigHead=false, BigHeadSizeNum=20, BigHeadHideVisual=true,
     }
 
@@ -448,14 +481,15 @@ function StartScript(plf)
     local aaYawAccum = 0
 
     -- ============================================================
-    -- BIG HEAD / HITBOX EXPANDER — engine (v6: teammate-safe, no-push)
+    -- BIG HEAD engine
     -- ============================================================
     local bhCache = {}
 
+    -- [F9] exact-name whitelist; substring "head" removed (matched HeadMesh / forehead / etc.)
+    local BH_NAMES = { Head = true, Hitbox = true, ["Head Hitbox"] = true }
     local function bh_isTarget(part)
         if not part:IsA("BasePart") then return false end
-        local n = part.Name:lower()
-        return n:find("head", 1, true) ~= nil or part.Name == "Hitbox"
+        return BH_NAMES[part.Name] == true
     end
 
     local function bh_snapshot(part)
@@ -533,16 +567,19 @@ function StartScript(plf)
         local n = cfg.BigHeadSizeNum or 20
         local target = Vector3.new(n, n, n)
         if part.Size ~= target then part.Size = target end
-        part.CanCollide = false   -- no physical push — walk through freely
-        part.CanQuery   = true    -- raycasts still register — damage lands
-        part.CanTouch   = false   -- no touch events
-        part.Massless   = true    -- keep rig mass stable
+        part.CanCollide = false
+        part.CanQuery   = true
+        part.CanTouch   = false
+        part.Massless   = true
         if cfg.BigHeadHideVisual then
             part.Transparency              = 1
             part.LocalTransparencyModifier = 1
             bh_hideChildren(part)
         else
+            -- [F5] restore hidden children when HideVisual is off
+            part.Transparency              = part.Transparency
             part.LocalTransparencyModifier = 0
+            bh_restoreChildren(part)
         end
     end
 
@@ -570,11 +607,10 @@ function StartScript(plf)
     wallHopRay.FilterType = Enum.RaycastFilterType.Exclude
     wallHopRay.IgnoreWater = true
     local lastHop, lastJumpFire = 0, 0
-
     local hopDirs = table.create(8)
 
     -- ============================================================
-    -- FPS BOOSTER — aggressive, fully restorable
+    -- FPS BOOSTER
     -- ============================================================
     local fpsBoosted = false
     local fpsConns   = nil
@@ -819,7 +855,7 @@ function StartScript(plf)
     titleText.TextXAlignment = Enum.TextXAlignment.Left
     local subText = Instance.new("TextLabel", title)
     subText.Size, subText.Position, subText.BackgroundTransparency, subText.Text, subText.TextColor3, subText.Font, subText.TextSize =
-        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9", TH.TextMute, FONT, 11
+        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9.1", TH.TextMute, FONT, 11
     subText.TextXAlignment = Enum.TextXAlignment.Left
     subText.Visible = isPC
     local hintText = Instance.new("TextLabel", title)
@@ -885,6 +921,7 @@ function StartScript(plf)
     tabLayout.SortOrder, tabLayout.Padding = Enum.SortOrder.LayoutOrder, UDim.new(0, tabPad)
 
     local pages, tabButtons = {}, {}
+    local activeTab
 
     local pageHolder = Instance.new("Frame", root)
     pageHolder.Size, pageHolder.Position, pageHolder.BackgroundTransparency, pageHolder.ClipsDescendants =
@@ -906,6 +943,7 @@ function StartScript(plf)
     discordBtn.MouseButton1Click:Connect(function() if setclipboard then setclipboard("https://discord.gg/nN9F6kFrmc") end end)
 
     local function setTab(name)
+        activeTab = name
         for n, data in pairs(tabButtons) do
             local on = (n == name)
             tw(data.btn, 0.16, {BackgroundTransparency = on and 0.4 or 1, TextColor3 = on and TH.Text or TH.TextDim})
@@ -941,7 +979,7 @@ function StartScript(plf)
         round(bar, 1); regAccent(bar, "BackgroundColor3")
         b.MouseEnter:Connect(function() if name ~= activeTab then tw(b, 0.14, {BackgroundTransparency=0.6, TextColor3=TH.Text}) end end)
         b.MouseLeave:Connect(function() if name ~= activeTab then tw(b, 0.14, {BackgroundTransparency=1, TextColor3=TH.TextDim}) end end)
-        b.MouseButton1Click:Connect(function() activeTab = name; setTab(name) end)
+        b.MouseButton1Click:Connect(function() setTab(name) end)
         tabButtons[name] = {btn = b, bar = bar}
     end
 
@@ -1105,7 +1143,9 @@ function StartScript(plf)
             listening = true; b.Text = "press a key..."
             task.wait(0.15)
             local conn
-            conn = U.InputBegan:Connect(function(input)
+            -- [F4] gameProcessedEvent guard: typing in chat no longer binds keys
+            conn = U.InputBegan:Connect(function(input, gpe)
+                if gpe then return end
                 if not listening then if conn then conn:Disconnect() end; return end
                 local isKey = input.UserInputType == Enum.UserInputType.Keyboard
                 local isL = input.UserInputType == UIT_M1
@@ -1208,7 +1248,17 @@ function StartScript(plf)
             if not v then BH_restoreAll() end
         end)
         slider(s, "Hitbox Size", "BigHeadSizeNum", 5, 50, 20, function(v) cfg.BigHeadSizeNum = v end)
-        toggle(s, "Invisible Head", "BigHeadHideVisual", true, function(v) cfg.BigHeadHideVisual = v end)
+        toggle(s, "Invisible Head", "BigHeadHideVisual", true, function(v)
+            cfg.BigHeadHideVisual = v
+            -- [F5] restore children immediately when toggling off while active
+            if not v and cfg.BigHead then
+                for part in pairs(bhCache) do
+                    part.Transparency = part.Transparency
+                    part.LocalTransparencyModifier = 0
+                    bh_restoreChildren(part)
+                end
+            end
+        end)
         toggle(s, "Wallcheck", "WallCheck", false, function(v) cfg.WallCheck = v end)
         toggle(s, "Triggerbot", "Trig", false, function(v) cfg.Trig = v end)
         toggle(s, "Hit Sound", "HitSound", false, function(v) cfg.HitSound = v end)
@@ -1351,7 +1401,7 @@ function StartScript(plf)
         numInput(s, "Prediction", "Pred", cfg.Pred, function(v) cfg.Pred = v end)
         numInput(s, "Pred Scale", "PredScale", cfg.PredScale, function(v) cfg.PredScale = v end)
         numInput(s, "Trigger Delay", "Dly", cfg.Dly, function(v) cfg.Dly = v end)
-        numInput(s, "FOV Size", "FovSize", cfg.FovSize, function(v) cfg.FovSize = v; fC.Radius = v end)
+        numInput(s, "FOV Size", "FovSize", cfg.FovSize, function(v) cfg.FovSize = v; if cfg.FovShape=="Circle" then fC.Radius = v end end)
         numInput(s, "Rand Offset X", "RandOffsetX", cfg.RandOffsetX, function(v) cfg.RandOffsetX = v end)
         numInput(s, "Rand Offset Y", "RandOffsetY", cfg.RandOffsetY, function(v) cfg.RandOffsetY = v end)
         numInput(s, "Rand Delay", "RandDelay", cfg.RandDelay, function(v) cfg.RandDelay = v end)
@@ -1360,6 +1410,8 @@ function StartScript(plf)
 
     do
         BUILD_PAGE = "Body"
+        -- [F2][F14] PartColors is scoped to the current Body build; cleared on any rebuild
+        cfg.PartColors = {}
         local s = section(pages["Body"], "hitbox diagram")
         local d = Instance.new("Frame", s)
         d.Size, d.BackgroundTransparency = UDim2.new(1,0,0,340), 1
@@ -1379,7 +1431,7 @@ function StartScript(plf)
             end
             b.MouseButton1Click:Connect(function()
                 cfg.SelectedParts[name] = not cfg.SelectedParts[name]; refresh()
-                for _, f in ipairs(cfg.PartColors) do f() end
+                for _, f in ipairs(cfg.PartColors) do pcall(f) end
             end)
             table.insert(cfg.PartColors, refresh)
             regRefresh("SelectedParts", refresh)
@@ -1417,10 +1469,14 @@ function StartScript(plf)
         button(s, "Clear Manual List", function() cfg.TargetList = {} end)
         local s2 = section(pages["Target"], "players")
         local function refreshPlayers()
-            for _, ch in ipairs(s2:GetChildren()) do if ch:IsA("TextButton") then ch:Destroy() end end
+            -- [F12] only destroy our prefixed rows, leave section header buttons intact
+            for _, ch in ipairs(s2:GetChildren()) do
+                if ch:IsA("TextButton") and ch:GetAttribute("zevaRow") then ch:Destroy() end
+            end
             for _, pl in ipairs(P:GetPlayers()) do
                 if pl ~= p then
                     local b = Instance.new("TextButton", s2)
+                    b:SetAttribute("zevaRow", true)
                     b.Size, b.BackgroundColor3, b.Text, b.TextColor3, b.Font, b.TextSize =
                         UDim2.new(1,0,0,24), cfg.TargetList[pl.Name] and TH.On or TH.Panel2,
                         pl.DisplayName, cfg.TargetList[pl.Name] and TH.Bg or TH.Text, FONT, 11
@@ -1451,7 +1507,7 @@ function StartScript(plf)
                 else cfg[k] = v end
             end
             if cfg.AccentColor then applyAccent(cfg.AccentColor) end
-            if fC and cfg.FovSize then fC.Radius = cfg.FovSize end
+            if fC and cfg.FovSize and cfg.FovShape == "Circle" then fC.Radius = cfg.FovSize end
             if plf == "PC" and cfg.HideKey ~= nil then hintText.Text = "["..keyName(cfg.HideKey).."]  to hide" end
             refreshAllFromCfg()
         end
@@ -1465,6 +1521,7 @@ function StartScript(plf)
             end
             data.SelectedParts = {}; for k,v in pairs(cfg.SelectedParts) do data.SelectedParts[k] = v end
             data.TargetList = {}; for k,v in pairs(cfg.TargetList) do data.TargetList[k] = v end
+            data.PartColors = nil
             local ok = pcall(function() writefile("zeva_config.json", HS:JSONEncode(data)) end)
             local btn = s:FindFirstChildOfClass("TextButton")
             if btn then
@@ -1546,10 +1603,11 @@ function StartScript(plf)
             UDim2.new(0.6,-10,1,0), UDim2.new(0.4,0,0,0), TH.Panel2, cfg.SoundPack, TH.Accent, FONTB, 11
         spB.AutoButtonColor, spB.BorderSizePixel = false, 0
         round(spB, 6); stroke(spB, TH.LineSoft, 1, 0.4); regAccent(spB, "TextColor3")
-        local sIds = {Default="rbxassetid://2865227271", Soft="rbxassetid://131961136", Hard="rbxassetid://911409889", Silent=""}
+        -- [F10] Silent no longer feeds "" to SoundId; use rbxassetid://0 placeholder
+        local sIds = {Default="rbxassetid://2865227271", Soft="rbxassetid://131961136", Hard="rbxassetid://911409889", Silent="rbxassetid://0"}
         spB.MouseButton1Click:Connect(function()
             spIdx = spIdx % #spOpts + 1; cfg.SoundPack = spOpts[spIdx]; spB.Text = cfg.SoundPack
-            if hitSound then pcall(function() hitSound.SoundId = sIds[cfg.SoundPack] or "" end) end
+            if hitSound then pcall(function() hitSound.SoundId = sIds[cfg.SoundPack] or "rbxassetid://0" end) end
         end)
         regFeature("Sound Pack", "Settings", spRow)
 
@@ -1609,6 +1667,8 @@ function StartScript(plf)
             if _G.__zeva_radarGui then pcall(function() _G.__zeva_radarGui.sg:Destroy() end); _G.__zeva_radarGui = nil end
             if _G.__zeva_fpsGui then pcall(function() _G.__zeva_fpsGui.sg:Destroy() end); _G.__zeva_fpsGui = nil end
             pcall(function() g:Destroy() end)
+            -- [F14] drop stale PartColors closures on teardown
+            cfg.PartColors = {}
         end
         db.MouseButton1Click:Connect(teardown)
         cd.MouseButton1Click:Connect(function() teardown(); task.wait(0.05); buildSelector() end)
@@ -1680,6 +1740,7 @@ function StartScript(plf)
         end))
     end
 
+    -- [F13] freecam key listeners only respond when freecam is on
     reg(U.InputBegan:Connect(function(input, gpe)
         if gpe or not cfg.FreeCam then return end
         if input.KeyCode == Enum.KeyCode.W then fcKeys.W = true end
@@ -1717,9 +1778,10 @@ function StartScript(plf)
         end)
     end)
 
+    -- [F1] nil-team guard so TeamCheck doesn't nuke every target when neither side has a team
     local function v(pl)
         if not pl or pl == p then return false end
-        if cfg.TeamCheck and pl.Team == p.Team then return false end
+        if cfg.TeamCheck and pl.Team ~= nil and pl.Team == p.Team then return false end
         local ch = pl.Character
         if not ch then return false end
         local hum = ch:FindFirstChild("Humanoid")
@@ -1734,7 +1796,6 @@ function StartScript(plf)
         return true
     end
 
-    -- BigHead-only filter: teammates ALWAYS excluded, K.O. checked, dead skipped
     local function bh_valid(pl)
         if not pl or pl == p then return false end
         if pl.Team and p.Team and pl.Team == p.Team then return false end
@@ -1800,30 +1861,10 @@ function StartScript(plf)
     local dr = {}
     local function ce(pl)
         if pl == p or dr[pl] then return end
-        local function mkLine()
-            local l
-            pcall(function() l = Drawing.new("Line") end)
-            return l
-        end
-        local function mkSquare()
-            local sq
-            pcall(function() sq = Drawing.new("Square") end)
-            return sq
-        end
-        local function mkText()
-            local t
-            pcall(function() t = Drawing.new("Text") end)
-            return t
-        end
-        local d = {
-            L={},
-            B  = mkSquare(),
-            HB = mkLine(),
-            HM = mkLine(),
-            D  = mkText(),
-            T  = mkLine(),
-            LT = mkLine(),
-        }
+        local function mkLine() local l; pcall(function() l = Drawing.new("Line") end); return l end
+        local function mkSquare() local sq; pcall(function() sq = Drawing.new("Square") end); return sq end
+        local function mkText() local t; pcall(function() t = Drawing.new("Text") end); return t end
+        local d = { L={}, B=mkSquare(), HB=mkLine(), HM=mkLine(), D=mkText(), T=mkLine(), LT=mkLine() }
         if d.B  then d.B.Thickness,  d.B.Color,  d.B.Filled  = cfg.BoxThickness,  cfg.BoxColor,  cfg.ESPFilled end
         if d.HB then d.HB.Thickness, d.HB.Color              = cfg.HealthThickness, cfg.HealthColor end
         if d.HM then d.HM.Thickness                          = cfg.HealthThickness end
@@ -1943,9 +1984,6 @@ function StartScript(plf)
 
     local function pushKillFeed(pl) table.insert(killFeed, {name = pl.DisplayName, born = tick()}) end
 
-    -- ============================================================
-    -- BIG HEAD runtime (v6: teammate-safe prune + no push)
-    -- ============================================================
     reg(RS.Stepped:Connect(function()
         if not cfg.BigHead then
             if next(bhCache) then BH_restoreAll() end
@@ -1961,7 +1999,6 @@ function StartScript(plf)
                 end
             end
         end
-        -- prune: dead parts, teammates that flipped mid-round, leavers, K.O. players
         for part in pairs(bhCache) do
             local ch = part and part.Parent
             local pl = ch and P:GetPlayerFromCharacter(ch)
@@ -1972,10 +2009,17 @@ function StartScript(plf)
     end))
 
     local currentAimPos = nil
+
+    -- [F6] Aim runs at a higher RenderStep priority than freecam so it doesn't fight the freecam write.
+    -- When freecam is on, aim writes into the freecam CFrame instead of the raw camera.
     reg(RS:BindToRenderStep(bindName, 200, function()
         if not cfg.Aim or not currentAimPos then return end
         if isPC and cfg.AimKey ~= nil and cfg.AimKeyHeld == false then return end
-        c.CFrame = c.CFrame:Lerp(CFrame.new(c.CFrame.Position, currentAimPos), curveAlpha(cfg.Smth))
+        if cfg.FreeCam and fcCFrame then
+            fcCFrame = CFrame.new(fcCFrame.Position, currentAimPos)
+        else
+            c.CFrame = c.CFrame:Lerp(CFrame.new(c.CFrame.Position, currentAimPos), curveAlpha(cfg.Smth))
+        end
     end))
 
     local fpsFrames, fpsLast, fpsValue, pingValue = 0, tick(), 0, 0
@@ -2028,17 +2072,28 @@ function StartScript(plf)
 
         if cfg.AntiAimEnabled then applyAntiAim() end
 
+        -- [F3] FOV shape exclusivity: exactly one Drawing visible at a time
         if cShowFov then
-            if cFovShape == "Circle" then pcall(function()
-                fC.Radius = cFovSize; fC.Position = vs/2; fC.Visible = true
-            end)
-            elseif cFovShape == "Square" then pcall(function()
-                fS.Position = Vector2.new(halfX - cFovSize, halfY - cFovSize)
-                fS.Size = Vector2.new(cFovSize*2, cFovSize*2); fS.Visible = true
-            end)
-            elseif cFovShape == "Triangle" then pcall(function()
-                fT.Radius = cFovSize; fT.Position = vs/2; fT.Visible = true
-            end) end
+            if cFovShape == "Circle" then
+                pcall(function()
+                    fC.Radius = cFovSize; fC.Position = vs/2; fC.Visible = true
+                end)
+                pcall(function() fS.Visible = false end)
+                pcall(function() fT.Visible = false end)
+            elseif cFovShape == "Square" then
+                pcall(function()
+                    fS.Position = Vector2.new(halfX - cFovSize, halfY - cFovSize)
+                    fS.Size = Vector2.new(cFovSize*2, cFovSize*2); fS.Visible = true
+                end)
+                pcall(function() fC.Visible = false end)
+                pcall(function() fT.Visible = false end)
+            elseif cFovShape == "Triangle" then
+                pcall(function()
+                    fT.Radius = cFovSize; fT.Position = vs/2; fT.Visible = true
+                end)
+                pcall(function() fC.Visible = false end)
+                pcall(function() fS.Visible = false end)
+            end
         else
             if fC.Visible then fC.Visible = false end
             if fS.Visible then fS.Visible = false end
@@ -2441,7 +2496,8 @@ function StartScript(plf)
                                     RS.Heartbeat:Wait()
                                     VIM:SendMouseButtonEvent(scx, scy, 0, false, game, 1)
                                 end)
-                                lastT = tick() + math.random() * cfg.RandDelay
+                                -- [F8] hard floor on refire interval so RandDelay=0 doesn't cluster shots
+                                lastT = tick() + math.max(0.03, math.random() * cfg.RandDelay)
                                 killStats.hits = killStats.hits + 1
                                 if cfg.HitSound and hitSound and tick() - lastHit > 0.15 then hitSound:Play(); lastHit = tick() end
                             end
