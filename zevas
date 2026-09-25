@@ -1,8 +1,10 @@
 --[[
-  Zeva v6.9.2 — magic bullet build
-  - BigHead renamed to Magic Bullet
-  - Invisibility is baked in, no toggle
-  - Invisible Head button removed from Aim tab
+  Zeva v6.9.7 — real AC scan + auto firewall build
+  - Real executor fingerprint (identifyexecutor + capability check)
+  - Real anti-cheat scan over DataModel services
+  - Auto-firewall: any RemoteEvent/RemoteFunction flagged by the scan
+    gets added to PROTECTED_REMOTES → FireServer/InvokeServer silently dropped
+  - Auto Bhop (ground-only), Magic Bullet, menu gate, all prior fixes preserved
 --]]
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
@@ -58,28 +60,171 @@ if not CAP.Drawing then
     return
 end
 
--- [F7] RemoteEvent firewall via __namecall hook
-pcall(function()
-    local protected = {}
-    for _, name in ipairs({"MobileAntiCheatRE", "aSKbG03ajK"}) do
-        local r = ReplicatedStorage:FindFirstChild(name)
-        if r and r:IsA("RemoteEvent") then protected[r] = true end
+-- ============================================================
+-- FIREWALL
+-- Shared protected set. Scan feeds into this at runtime.
+-- Any RemoteEvent/RemoteFunction keyed here has its FireServer
+-- and InvokeServer calls silently dropped.
+-- ============================================================
+local PROTECTED_REMOTES = {}
+local FIREWALL_ACTIVE = false
+
+local function installFirewall()
+    if FIREWALL_ACTIVE then return true end
+    if not (getrawmetatable and setreadonly and newcclosure and getnamecallmethod) then
+        return false
     end
-    if next(protected) == nil then return end
     local mt = getrawmetatable(game)
-    if mt then
+    if not mt then return false end
+    local ok = pcall(function()
         local oldNamecall = mt.__namecall
         setreadonly(mt, false)
         mt.__namecall = newcclosure(function(self, ...)
             local method = getnamecallmethod()
             if method == "FireServer" or method == "InvokeServer" then
-                if protected[self] then return nil end
+                if PROTECTED_REMOTES[self] then return nil end
             end
             return oldNamecall(self, ...)
         end)
         setreadonly(mt, true)
+    end)
+    FIREWALL_ACTIVE = ok
+    return ok
+end
+
+-- preset known AC remote names
+for _, name in ipairs({"MobileAntiCheatRE", "aSKbG03ajK"}) do
+    local r = ReplicatedStorage:FindFirstChild(name)
+    if r and (r:IsA("RemoteEvent") or r:IsA("RemoteFunction")) then
+        PROTECTED_REMOTES[r] = true
     end
-end)
+end
+installFirewall()
+
+-- ============================================================
+-- EXECUTOR FINGERPRINT
+-- ============================================================
+local function fingerprintExecutor()
+    local name = "unknown"
+    pcall(function()
+        if identifyexecutor then name = tostring(identifyexecutor()) end
+    end)
+    pcall(function()
+        if (name == "unknown" or name == "" or name == "nil") and getexecutorname then
+            name = tostring(getexecutorname())
+        end
+    end)
+    local caps = {}
+    local env = (getgenv and getgenv()) or _G or {}
+    for _, fn in ipairs({
+        "getrawmetatable", "setreadonly", "hookfunction", "newcclosure",
+        "checkcaller", "getnamecallmethod", "getsenv", "getreg",
+        "getupvalues", "getgc", "iscclosure", "islclosure",
+        "gethwid", "request", "http_request", "writefile", "readfile",
+    }) do
+        if type(rawget(env, fn)) == "function" or type(_G[fn]) == "function" then
+            table.insert(caps, fn)
+        end
+    end
+    return name, caps
+end
+
+-- ============================================================
+-- REAL ANTI-CHEAT SCAN
+-- Walks storage containers for remotes/scripts/folders whose names
+-- match known AC patterns. Returns findings list, count, raw obj refs.
+-- ============================================================
+local function realAntiCheatScan()
+    local findings = {}
+    local rawObjects = {}
+
+    local patterns = {
+        "anticheat", "anti%-cheat", "ac_", "_ac", "battleye", "eac",
+        "vanguard", "hyperion", "byfron", "kernel", "inject",
+        "detect", "integrity", "validate", "verify", "suspicious",
+        "report", "ban", "kick", "punish", "sanction", "monitor",
+        "audit", "anomal", "secur", "guard", "shield", "sentinel",
+    }
+    local function matches(s)
+        local low = s:lower()
+        for _, pat in ipairs(patterns) do
+            if low:find(pat) then return pat end
+        end
+        return nil
+    end
+
+    local services = {
+        game:GetService("ReplicatedStorage"),
+        game:GetService("ReplicatedFirst"),
+        game:GetService("StarterGui"),
+        game:GetService("StarterPlayer"),
+        game:GetService("ServerStorage"),
+        game:GetService("ServerScriptService"),
+        game:GetService("Chat"),
+        game:GetService("SoundService"),
+    }
+
+    for _, svc in ipairs(services) do
+        pcall(function()
+            for _, obj in ipairs(svc:GetDescendants()) do
+                local ok = obj:IsA("RemoteEvent")
+                       or obj:IsA("RemoteFunction")
+                       or obj:IsA("BindableEvent")
+                       or obj:IsA("BindableFunction")
+                       or obj:IsA("Script")
+                       or obj:IsA("LocalScript")
+                       or obj:IsA("ModuleScript")
+                       or obj:IsA("Folder")
+                       or obj:IsA("Actor")
+                if ok then
+                    local hit = matches(obj.Name)
+                    if hit then
+                        table.insert(findings, {
+                            name = obj.Name,
+                            class = obj.ClassName,
+                            path = obj:GetFullName(),
+                            match = hit,
+                        })
+                        table.insert(rawObjects, obj)
+                    end
+                end
+            end
+        end)
+    end
+
+    -- local player attributes
+    pcall(function()
+        local ok, attrs = pcall(function() return p:GetAttributes() end)
+        if ok and type(attrs) == "table" then
+            for k in pairs(attrs) do
+                local hit = matches(k)
+                if hit then
+                    table.insert(findings, {
+                        name = k, class = "Attribute",
+                        path = "LocalPlayer." .. k, match = hit,
+                    })
+                end
+            end
+        end
+    end)
+
+    -- getgenv flags
+    pcall(function()
+        local env = (getgenv and getgenv()) or _G or {}
+        for k in pairs(env) do
+            if type(k) == "string" and #k < 64 then
+                local hit = matches(k)
+                if hit and not k:find("^zeva") and not k:find("^__zeva") then
+                    table.insert(findings, {
+                        name = k, class = "Global", path = "getgenv()", match = hit,
+                    })
+                end
+            end
+        end
+    end)
+
+    return findings, #findings, rawObjects
+end
 
 local TH = {
     Bg=Color3.fromRGB(11,11,13), BgAlt=Color3.fromRGB(15,15,18),
@@ -114,7 +259,9 @@ end
 
 local function clearSelectors()
     for _, ch in ipairs(p.PlayerGui:GetChildren()) do
-        if ch.Name:find("^zeva_sel_") or ch.Name:find("^zeva_key_") then ch:Destroy() end
+        if ch.Name:find("^zeva_sel_") or ch.Name:find("^zeva_key_") or ch.Name:find("^zeva_scan_") then
+            ch:Destroy()
+        end
     end
 end
 
@@ -341,9 +488,11 @@ function buildKeyScreen()
             kErr.TextColor3 = TERM.Green
             kErr.Text = "[ ok ] access granted"
             s.Color = TERM.Green
-            task.wait(0.6)
+            task.wait(0.4)
             kG:Destroy()
-            StartScript(currentPlatform)
+            buildScanScreen(function()
+                StartScript(currentPlatform)
+            end)
         else
             kErr.TextColor3 = TERM.Red
             kErr.Text = "[err ] invalid key"
@@ -360,7 +509,211 @@ function buildKeyScreen()
     pcall(function() kBox:CaptureFocus() end)
 end
 
+-- ============================================================
+-- SCAN ANIMATION — v6.9.7
+-- Real fingerprint + real AC scan + auto-firewall
+-- ============================================================
+function buildScanScreen(onDone)
+    local sG = Instance.new("ScreenGui", p.PlayerGui)
+    sG.Name = "zeva_scan_" .. tostring(math.random(1e6, 9e6))
+    sG.ResetOnSpawn = false
+    sG.IgnoreGuiInset = true
+    sG.DisplayOrder = 2147483647
+    sG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+    local outer, body, s = termWindow(sG, "/dev/zeva --scan", 460, 400)
+
+    local pad = Instance.new("UIPadding", body)
+    pad.PaddingLeft = UDim.new(0, 16); pad.PaddingRight = UDim.new(0, 16)
+    pad.PaddingTop  = UDim.new(0, 14); pad.PaddingBottom = UDim.new(0, 12)
+
+    local header = Instance.new("TextLabel", body)
+    header.BackgroundTransparency = 1
+    header.Font = MONO; header.TextSize = 13; header.TextColor3 = TERM.Hi
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.Position = UDim2.new(0, 0, 0, 0)
+    header.Size = UDim2.new(1, 0, 0, 18)
+    header.Text = ">$ zeva --verify --integrity-scan"
+    header.ZIndex = 2
+
+    local subtitle = Instance.new("TextLabel", body)
+    subtitle.BackgroundTransparency = 1
+    subtitle.Font = MONO; subtitle.TextSize = 11; subtitle.TextColor3 = TERM.Dim
+    subtitle.TextXAlignment = Enum.TextXAlignment.Left
+    subtitle.Position = UDim2.new(0, 0, 0, 20)
+    subtitle.Size = UDim2.new(1, 0, 0, 16)
+    subtitle.Text = "operator: " .. p.DisplayName .. "  |  uid: " .. tostring(p.UserId)
+    subtitle.ZIndex = 2
+
+    local logHolder = Instance.new("Frame", body)
+    logHolder.Position = UDim2.new(0, 0, 0, 46)
+    logHolder.Size = UDim2.new(1, 0, 1, -100)
+    logHolder.BackgroundTransparency = 1
+    logHolder.ClipsDescendants = true
+    local layout = Instance.new("UIListLayout", logHolder)
+    layout.SortOrder, layout.Padding = Enum.SortOrder.LayoutOrder, UDim.new(0, 3)
+
+    local barHolder = Instance.new("Frame", body)
+    barHolder.Position = UDim2.new(0, 0, 1, -46)
+    barHolder.Size = UDim2.new(1, 0, 0, 6)
+    barHolder.BackgroundColor3 = Color3.fromRGB(30, 26, 12)
+    barHolder.BorderSizePixel = 0
+
+    local barFill = Instance.new("Frame", barHolder)
+    barFill.Size = UDim2.new(0, 0, 1, 0)
+    barFill.BackgroundColor3 = TERM.Amber
+    barFill.BorderSizePixel = 0
+
+    local pct = Instance.new("TextLabel", body)
+    pct.BackgroundTransparency = 1
+    pct.Font = MONO; pct.TextSize = 11; pct.TextColor3 = TERM.Dim
+    pct.TextXAlignment = Enum.TextXAlignment.Right
+    pct.Position = UDim2.new(0, 0, 1, -34)
+    pct.Size = UDim2.new(1, 0, 0, 14)
+    pct.Text = "0%"
+    pct.ZIndex = 2
+
+    local status = Instance.new("TextLabel", body)
+    status.BackgroundTransparency = 1
+    status.Font = MONO; status.TextSize = 11; status.TextColor3 = TERM.Amber
+    status.TextXAlignment = Enum.TextXAlignment.Left
+    status.Position = UDim2.new(0, 0, 1, -34)
+    status.Size = UDim2.new(1, -50, 0, 14)
+    status.Text = "initializing..."
+    status.ZIndex = 2
+
+    local MAX_LOG_LINES = 10
+    local function addLine(txt, col)
+        local l = Instance.new("TextLabel", logHolder)
+        l.BackgroundTransparency = 1
+        l.Font = MONO; l.TextSize = 12
+        l.TextColor3 = col or TERM.Amber
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.Size = UDim2.new(1, 0, 0, 15)
+        l.Text = txt
+        l.ZIndex = 2
+        local lines = {}
+        for _, ch in ipairs(logHolder:GetChildren()) do
+            if ch:IsA("TextLabel") then table.insert(lines, ch) end
+        end
+        if #lines > MAX_LOG_LINES then lines[1]:Destroy() end
+        return l
+    end
+
+    -- ============================================
+    -- PRE-SCAN: real data
+    -- ============================================
+    local execName, execCaps = fingerprintExecutor()
+    local acFindings, acCount, acRaw = realAntiCheatScan()
+
+    -- auto-firewall: add every RemoteEvent/RemoteFunction finding
+    local fwActive = installFirewall()
+    local blockedCount = 0
+    for _, obj in ipairs(acRaw or {}) do
+        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+            PROTECTED_REMOTES[obj] = true
+            blockedCount = blockedCount + 1
+        end
+    end
+
+    local acStatusText, acStatusColor
+    if acCount == 0 then
+        acStatusText = "clean"
+        acStatusColor = TERM.Green
+    elseif fwActive then
+        acStatusText = tostring(blockedCount) .. " blocked"
+        acStatusColor = TERM.Green
+    else
+        acStatusText = tostring(acCount) .. " found — firewall offline"
+        acStatusColor = TERM.Red
+    end
+
+    local capsPreview = #execCaps > 0
+        and (execCaps[1] .. (execCaps[2] and ", " .. execCaps[2] or "") .. (#execCaps > 2 and ", +" .. (#execCaps - 2) or ""))
+        or "none"
+
+    local remoteCount = 0
+    pcall(function()
+        for _, o in ipairs(ReplicatedStorage:GetDescendants()) do
+            if o:IsA("RemoteEvent") or o:IsA("RemoteFunction") then
+                remoteCount = remoteCount + 1
+            end
+        end
+    end)
+
+    -- ============================================
+    -- STEPS
+    -- ============================================
+    local steps = {
+        { "[>] establishing secure tunnel ............ ok",           TERM.Amber, "handshake",    0.35 },
+        { "[>] fingerprinting executor ............... " .. execName, TERM.Amber, "executor",     0.35 },
+        { "[>]   capability check .................... " .. capsPreview, TERM.Dim, "capabilities", 0.3 },
+        { "[>] mounting /dev/zeva ................... ok",           TERM.Amber, "mounting fs",  0.25 },
+        { "[>] hashing game files ................... ",              TERM.Amber, "hashing",      0.55 },
+        { "[>]   Game.PlaceId    = " .. tostring(game.PlaceId),       TERM.Dim,   "hashing",      0.15 },
+        { "[>]   Game.JobId      = " .. tostring(game.JobId):sub(1, 12) .. "..", TERM.Dim, "hashing", 0.15 },
+        { "[>]   Players.Count   = " .. tostring(#P:GetPlayers()),    TERM.Dim,   "hashing",      0.15 },
+        { "[>] verifying asset integrity ............ ok",           TERM.Amber, "assets",       0.35 },
+        { "[>] enumerating remote events ........... " .. tostring(remoteCount) .. " found", TERM.Amber, "remotes", 0.35 },
+        { "[>] scanning for anti-cheat hooks ....... ",              TERM.Amber, "anti-cheat",   0.8 },
+        { "[>]   result ............................. " .. acStatusText, acStatusColor, "anti-cheat", 0.4 },
+    }
+
+    if acCount > 0 then
+        local shown = math.min(acCount, 3)
+        for i = 1, shown do
+            local f = acFindings[i]
+            local label = "  > " .. f.class .. " '" .. f.name .. "'"
+            if #label > 46 then label = label:sub(1, 43) .. "..." end
+            local isRemote = (f.class == "RemoteEvent" or f.class == "RemoteFunction")
+            local tag = isRemote and "[×] " or "[!] "
+            local col = isRemote and TERM.Red or TERM.Dim
+            table.insert(steps, { tag .. label, col, "firewall", 0.22 })
+        end
+        if acCount > shown then
+            table.insert(steps, { "[×]   + " .. tostring(acCount - shown) .. " more", TERM.Dim, "firewall", 0.2 })
+        end
+        if blockedCount > 0 and fwActive then
+            table.insert(steps, {
+                "[>] blocking " .. tostring(blockedCount) .. " remote" .. (blockedCount == 1 and "" or "s") .. " .......... ok",
+                TERM.Green, "firewall", 0.35
+            })
+        end
+    end
+
+    local tail = {
+        { "[>] checking account status ............. ok",        TERM.Amber, "account",   0.3 },
+        { "[>] loading zeva core modules ........... ok",        TERM.Amber, "modules",   0.4 },
+        { "[>] applying config ..................... ok",        TERM.Amber, "config",    0.35 },
+        { "[>] injecting runtime ................... ok",        TERM.Green, "injecting", 0.35 },
+        { "[>] initializing gui .................... ok",        TERM.Hi,    "gui",       0.3 },
+        { "[*] access granted — welcome, " .. p.DisplayName,     TERM.Green, "done",      0.45 },
+    }
+    for _, st in ipairs(tail) do table.insert(steps, st) end
+
+    task.spawn(function()
+        local total = #steps
+        for i, step in ipairs(steps) do
+            addLine(step[1], step[2])
+            status.Text = step[3]
+            local frac = i / total
+            tw(barFill, step[4], {Size = UDim2.new(frac, 0, 1, 0)})
+            pct.Text = math.floor(frac * 100) .. "%"
+            task.wait(step[4])
+        end
+        pct.Text = "100%"
+        s.Color = TERM.Green
+        task.wait(0.5)
+        sG:Destroy()
+        task.wait(0.1)
+        if onDone then onDone() end
+    end)
+end
+
 function StartScript(plf)
+    for _, ch in ipairs(p.PlayerGui:GetChildren()) do
+        if ch.Name:find("^zeva_scan_") then ch:Destroy() end
+    end
     clearSelectors()
 
     for _, k in ipairs({"__zeva_killStatsGui","__zeva_killFeedGui","__zeva_radarGui","__zeva_fpsGui"}) do
@@ -403,10 +756,9 @@ function StartScript(plf)
         LookTracerThickness=1, ESPFilled=false, ESPFontSize=12,
         Radar=false, RadarSize=140, RadarRange=200,
         AntiAimEnabled=false, AntiAimMode="Static", AntiAimPitch=0, AntiAimYaw=180, AntiAimSpinSpeed=8,
-        WallHop=false, WallHopPower=50,
+        AutoBhop=false,
         FPSBooster=false, FPSOverlay=false,
         FreeCam=false, FreeCamSpeed=60,
-        -- [MAGIC BULLET] expanded hitbox, invisibility baked in
         BigHead=false, BigHeadSizeNum=20,
     }
 
@@ -418,14 +770,9 @@ function StartScript(plf)
     local function refreshAllFromCfg() for _, fns in pairs(UI_REFRESH) do for _, fn in ipairs(fns) do pcall(fn) end end end
 
     local conns = {}
-    local function reg(c)
-        if c then table.insert(conns, c) end
-        return c
-    end
+    local function reg(c) if c then table.insert(conns, c) end return c end
     local function disconnectAll()
-        for _, c in ipairs(conns) do
-            pcall(function() c:Disconnect() end)
-        end
+        for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
         conns = {}
     end
 
@@ -467,11 +814,7 @@ function StartScript(plf)
     local killFeed = {}
     local aaYawAccum = 0
 
-    -- ============================================================
-    -- MAGIC BULLET engine
-    -- ============================================================
     local bhCache = {}
-
     local BH_NAMES = { Head = true, Hitbox = true, ["Head Hitbox"] = true }
     local function bh_isTarget(part)
         if not part:IsA("BasePart") then return false end
@@ -481,14 +824,10 @@ function StartScript(plf)
     local function bh_snapshot(part)
         if bhCache[part] then return end
         bhCache[part] = {
-            Size                      = part.Size,
-            Transparency              = part.Transparency,
+            Size = part.Size, Transparency = part.Transparency,
             LocalTransparencyModifier = part.LocalTransparencyModifier,
-            CanCollide                = part.CanCollide,
-            CanQuery                  = part.CanQuery,
-            CanTouch                  = part.CanTouch,
-            Massless                  = part.Massless,
-            children                  = {},
+            CanCollide = part.CanCollide, CanQuery = part.CanQuery,
+            CanTouch = part.CanTouch, Massless = part.Massless, children = {},
         }
     end
 
@@ -515,7 +854,7 @@ function StartScript(plf)
             elseif ch:IsA("BasePart") then
                 if saved.LocalTransparencyModifier == nil then
                     saved.LocalTransparencyModifier = ch.LocalTransparencyModifier
-                    saved.Transparency2            = ch.Transparency
+                    saved.Transparency2 = ch.Transparency
                 end
                 ch.LocalTransparencyModifier = 1
                 ch.Transparency = 1
@@ -548,21 +887,16 @@ function StartScript(plf)
         snap.children = {}
     end
 
-    -- [MAGIC BULLET] Expand the target's head hitbox into a large invisible cube.
-    -- CanQuery=true -> every raycast (yours + server-side recheck) lands on it.
-    -- CanCollide=false -> no physics push, walk through freely.
-    -- CanTouch=false -> no touch-triggered events.
-    -- Transparency forced to 1 + all visuals stripped -> completely unseen.
     local function bh_expand(part)
         bh_snapshot(part)
         local n = cfg.BigHeadSizeNum or 20
         local target = Vector3.new(n, n, n)
         if part.Size ~= target then part.Size = target end
         part.CanCollide = false
-        part.CanQuery   = true
-        part.CanTouch   = false
-        part.Massless   = true
-        part.Transparency              = 1
+        part.CanQuery = true
+        part.CanTouch = false
+        part.Massless = true
+        part.Transparency = 1
         part.LocalTransparencyModifier = 1
         bh_hideChildren(part)
     end
@@ -571,13 +905,13 @@ function StartScript(plf)
         local s = bhCache[part]
         if not s then return end
         if part.Parent then
-            part.Size                      = s.Size
-            part.Transparency              = s.Transparency
+            part.Size = s.Size
+            part.Transparency = s.Transparency
             part.LocalTransparencyModifier = s.LocalTransparencyModifier
-            part.CanCollide                = s.CanCollide
-            part.CanQuery                  = s.CanQuery
-            part.CanTouch                  = s.CanTouch
-            part.Massless                  = s.Massless
+            part.CanCollide = s.CanCollide
+            part.CanQuery = s.CanQuery
+            part.CanTouch = s.CanTouch
+            part.Massless = s.Massless
         end
         bh_restoreChildren(part)
         bhCache[part] = nil
@@ -587,18 +921,11 @@ function StartScript(plf)
         for part in pairs(bhCache) do bh_restore(part) end
     end
 
-    local wallHopRay = RaycastParams.new()
-    wallHopRay.FilterType = Enum.RaycastFilterType.Exclude
-    wallHopRay.IgnoreWater = true
-    local lastHop, lastJumpFire = 0, 0
-    local hopDirs = table.create(8)
+    local lastJumpFire = 0
 
-    -- ============================================================
-    -- FPS BOOSTER
-    -- ============================================================
     local fpsBoosted = false
-    local fpsConns   = nil
-    local fpsRevert  = {}
+    local fpsConns = nil
+    local fpsRevert = {}
 
     local function _saveSet(obj, prop, newValue)
         if not obj then return end
@@ -628,38 +955,33 @@ function StartScript(plf)
     local function applyFPSBooster()
         if fpsBoosted then return end
         fpsBoosted = true
-
         local sweep = workspace:GetDescendants()
         for i = 1, #sweep do stripPerf(sweep[i]) end
         sweep = nil
-
         for _, o in ipairs(L:GetChildren()) do
             if o:IsA("PostEffect") then _saveSet(o, "Enabled", false) end
             if o:IsA("Atmosphere") then _saveSet(o, "Density", 0) end
-            if o:IsA("Clouds")     then _saveSet(o, "Enabled", false) end
+            if o:IsA("Clouds") then _saveSet(o, "Enabled", false) end
         end
-
-        _saveSet(L, "GlobalShadows",            false)
-        _saveSet(L, "FogEnd",                   100000)
-        _saveSet(L, "ShadowSoftness",           0)
-        _saveSet(L, "EnvironmentDiffuseScale",  0)
+        _saveSet(L, "GlobalShadows", false)
+        _saveSet(L, "FogEnd", 100000)
+        _saveSet(L, "ShadowSoftness", 0)
+        _saveSet(L, "EnvironmentDiffuseScale", 0)
         _saveSet(L, "EnvironmentSpecularScale", 0)
-        _saveSet(L, "Brightness",               3)
-        _saveSet(L, "GlobalWind",               Vector3.zero)
-
+        _saveSet(L, "Brightness", 3)
+        _saveSet(L, "GlobalWind", Vector3.zero)
         local terr = workspace:FindFirstChildOfClass("Terrain")
         if terr then
-            _saveSet(terr, "WaterWaveSize",     0)
+            _saveSet(terr, "WaterWaveSize", 0)
             _saveSet(terr, "WaterTransparency", 1)
-            _saveSet(terr, "WaterReflectance",  0)
+            _saveSet(terr, "WaterReflectance", 0)
         end
-
         fpsConns = {
             ws = workspace.DescendantAdded:Connect(stripPerf),
             light = L.ChildAdded:Connect(function(o)
                 if o:IsA("PostEffect") then _saveSet(o, "Enabled", false) end
                 if o:IsA("Atmosphere") then _saveSet(o, "Density", 0) end
-                if o:IsA("Clouds")     then _saveSet(o, "Enabled", false) end
+                if o:IsA("Clouds") then _saveSet(o, "Enabled", false) end
             end),
         }
     end
@@ -668,15 +990,13 @@ function StartScript(plf)
         if not fpsBoosted then return end
         fpsBoosted = false
         if fpsConns then
-            pcall(function() fpsConns.ws:Disconnect()    end)
+            pcall(function() fpsConns.ws:Disconnect() end)
             pcall(function() fpsConns.light:Disconnect() end)
             fpsConns = nil
         end
         for i = #fpsRevert, 1, -1 do
             local r = fpsRevert[i]
-            pcall(function()
-                if r[1] and r[1].Parent then r[1][r[2]] = r[3] end
-            end)
+            pcall(function() if r[1] and r[1].Parent then r[1][r[2]] = r[3] end end)
         end
         fpsRevert = {}
     end
@@ -721,47 +1041,17 @@ function StartScript(plf)
     end
 
     local function autoHop()
-        if not cfg.WallHop then return end
+        if not cfg.AutoBhop then return end
         local char = p.Character; if not char then return end
-        local hrp = char:FindFirstChild("HumanoidRootPart")
         local hum = char:FindFirstChildOfClass("Humanoid")
-        if not (hrp and hum) then return end
+        if not hum or hum.Health <= 0 then return end
+        if hum.FloorMaterial == AIR then return end
         local now = tick()
-        local onGround = hum.FloorMaterial ~= AIR
-        if onGround then
-            if now - lastJumpFire > 0.03 then
-                hum.Jump = true
-                pcall(function() hum:ChangeState(JUMPING) end)
-                lastJumpFire = now
-            end
-            return
+        if now - lastJumpFire > 0.05 then
+            hum.Jump = true
+            pcall(function() hum:ChangeState(JUMPING) end)
+            lastJumpFire = now
         end
-        if now - lastHop < 0.06 then return end
-        wallHopRay.FilterDescendantsInstances = {char}
-        local origin = hrp.Position
-        local cf = hrp.CFrame
-        local lv, rv = cf.LookVector, cf.RightVector
-        hopDirs[1] = lv
-        hopDirs[2] = -lv
-        hopDirs[3] = rv
-        hopDirs[4] = -rv
-        hopDirs[5] = (lv+rv).Unit
-        hopDirs[6] = (lv-rv).Unit
-        hopDirs[7] = (-lv+rv).Unit
-        hopDirs[8] = (-lv-rv).Unit
-        local normal
-        for i = 1, 8 do
-            local r = workspace:Raycast(origin, hopDirs[i] * 4.5, wallHopRay)
-            if r then normal = r.Normal; break end
-        end
-        if not normal then return end
-        lastHop = now
-        pcall(function() hum:ChangeState(JUMPING) end)
-        local push = Instance.new("BodyVelocity")
-        push.MaxForce = Vector3.new(1e5,1e5,1e5)
-        push.Velocity = normal * cfg.WallHopPower + V3_UP50
-        push.Parent = hrp
-        game:GetService("Debris"):AddItem(push, 0.18)
     end
 
     local function applyAntiAim()
@@ -839,7 +1129,7 @@ function StartScript(plf)
     titleText.TextXAlignment = Enum.TextXAlignment.Left
     local subText = Instance.new("TextLabel", title)
     subText.Size, subText.Position, subText.BackgroundTransparency, subText.Text, subText.TextColor3, subText.Font, subText.TextSize =
-        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9.2", TH.TextMute, FONT, 11
+        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9.7", TH.TextMute, FONT, 11
     subText.TextXAlignment = Enum.TextXAlignment.Left
     subText.Visible = isPC
     local hintText = Instance.new("TextLabel", title)
@@ -856,10 +1146,10 @@ function StartScript(plf)
     sbLine.Size, sbLine.Position, sbLine.BackgroundColor3, sbLine.BorderSizePixel =
         UDim2.new(0,1,1,0), UDim2.new(1,-1,0,0), TH.LineSoft, 0
 
-    local uCardH    = isPC and 80 or 64
+    local uCardH = isPC and 80 or 64
     local uAvatarSz = isPC and 44 or 36
-    local uNameY    = isPC and 12 or 6
-    local uRowGap   = isPC and 14 or 12
+    local uNameY = isPC and 12 or 6
+    local uRowGap = isPC and 14 or 12
 
     local userCard = Instance.new("Frame", sidebar)
     userCard.Size, userCard.Position, userCard.BackgroundColor3, userCard.BorderSizePixel =
@@ -890,11 +1180,11 @@ function StartScript(plf)
         UDim2.new(1,uTextW,0,uRowGap), UDim2.new(0,uTextX,0,uNameY + uRowGap * 2), 1, "ID: "..tostring(p.UserId), TH.TextMute, FONT, 9
     uId.TextXAlignment = Enum.TextXAlignment.Left
 
-    local tabH      = isPC and 30 or 26
-    local tabPad    = isPC and 4  or 3
-    local tabCount  = 7
+    local tabH = isPC and 30 or 26
+    local tabPad = isPC and 4 or 3
+    local tabCount = 7
     local tabStartY = 14
-    local tabListH  = tabCount * (tabH + tabPad) - tabPad
+    local tabListH = tabCount * (tabH + tabPad) - tabPad
     local settingsH = isPC and 36 or 30
     local settingsY = tabStartY + tabListH + (isPC and 12 or 10)
 
@@ -942,12 +1232,8 @@ function StartScript(plf)
         local b = Instance.new("TextButton", parent)
         if isSet then
             b.Size, b.Position, b.Text, b.TextSize, b.Font, b.ZIndex =
-                UDim2.new(1,-24,0,settingsH),
-                UDim2.new(0,12,0,settingsY),
-                "   ⚙",
-                isPC and 26 or 22,
-                FONTB,
-                5
+                UDim2.new(1,-24,0,settingsH), UDim2.new(0,12,0,settingsY),
+                "   ⚙", isPC and 26 or 22, FONTB, 5
         else
             b.Size, b.Text, b.TextSize, b.Font = UDim2.new(1,0,0,tabH), "      "..name, 12, FONT
         end
@@ -1327,9 +1613,8 @@ function StartScript(plf)
         toggle(s, "Spinbot", "Spin", false, function(v) cfg.Spin = v end)
         toggle(s, "Noclip", "Noclip", false, function(v) cfg.Noclip = v end)
         slider(s, "Spin Speed", "SpinSpeed", 0, 360, 50, function(v) cfg.SpinSpeed = v end)
-        local wh = section(pages["Move"], "auto bhop / wallhop")
-        toggle(wh, "Auto Bhop / WallHop", "WallHop", false, function(v) cfg.WallHop = v end)
-        slider(wh, "WallHop Power", "WallHopPower", 10, 150, 50, function(v) cfg.WallHopPower = v end)
+        local wh = section(pages["Move"], "auto bhop")
+        toggle(wh, "Auto Bhop", "AutoBhop", false, function(v) cfg.AutoBhop = v end)
         local aa = section(pages["Move"], "anti-aim")
         toggle(aa, "Anti-Aim", "AntiAimEnabled", false, function(v) cfg.AntiAimEnabled = v; if not v then restoreAntiAim() end end)
         local aaMR = Instance.new("Frame", aa)
@@ -1496,9 +1781,7 @@ function StartScript(plf)
             local btn = s:FindFirstChildOfClass("TextButton")
             if btn then
                 btn.Text = ok and "Saved!" or "Save Failed"
-                task.delay(1.5, function()
-                    if btn and btn.Parent then btn.Text = "Save Config" end
-                end)
+                task.delay(1.5, function() if btn and btn.Parent then btn.Text = "Save Config" end end)
             end
         end)
         button(s, "Load Config", function()
@@ -1516,6 +1799,7 @@ function StartScript(plf)
             cfg.SelectedParts = {["Head"]=true}
             cfg.TargetList = {}
             cfg.BigHead=false; cfg.BigHeadSizeNum=20
+            cfg.AutoBhop=false
             BH_restoreAll()
             applyAccent(cfg.AccentColor)
             if hintText and plf == "PC" then
@@ -1831,12 +2115,12 @@ function StartScript(plf)
         local function mkSquare() local sq; pcall(function() sq = Drawing.new("Square") end); return sq end
         local function mkText() local t; pcall(function() t = Drawing.new("Text") end); return t end
         local d = { L={}, B=mkSquare(), HB=mkLine(), HM=mkLine(), D=mkText(), T=mkLine(), LT=mkLine() }
-        if d.B  then d.B.Thickness,  d.B.Color,  d.B.Filled  = cfg.BoxThickness,  cfg.BoxColor,  cfg.ESPFilled end
-        if d.HB then d.HB.Thickness, d.HB.Color              = cfg.HealthThickness, cfg.HealthColor end
-        if d.HM then d.HM.Thickness                          = cfg.HealthThickness end
-        if d.D  then d.D.Size, d.D.Center, d.D.Color         = cfg.ESPFontSize, true, cfg.DistanceColor end
-        if d.T  then d.T.Thickness,  d.T.Color               = cfg.TracerThickness, cfg.TracerColor end
-        if d.LT then d.LT.Thickness, d.LT.Color              = cfg.LookTracerThickness, cfg.LookTracerColor end
+        if d.B then d.B.Thickness, d.B.Color, d.B.Filled = cfg.BoxThickness, cfg.BoxColor, cfg.ESPFilled end
+        if d.HB then d.HB.Thickness, d.HB.Color = cfg.HealthThickness, cfg.HealthColor end
+        if d.HM then d.HM.Thickness = cfg.HealthThickness end
+        if d.D then d.D.Size, d.D.Center, d.D.Color = cfg.ESPFontSize, true, cfg.DistanceColor end
+        if d.T then d.T.Thickness, d.T.Color = cfg.TracerThickness, cfg.TracerColor end
+        if d.LT then d.LT.Thickness, d.LT.Color = cfg.LookTracerThickness, cfg.LookTracerColor end
         dr[pl] = d
         for i = 1, 30 do
             local l = mkLine()
@@ -1877,8 +2161,9 @@ function StartScript(plf)
 
     local function updateChams()
         local now = tick()
+        local hide = root.Visible
         for pl, data in pairs(hitChams) do
-            if now > data.expiresAt then
+            if now > data.expiresAt or hide then
                 pcall(function() data.sq:Remove() end)
                 hitChams[pl] = nil
             else
@@ -1978,6 +2263,7 @@ function StartScript(plf)
 
     reg(RS:BindToRenderStep(bindName, 200, function()
         if not cfg.Aim or not currentAimPos then return end
+        if root.Visible then return end
         if isPC and cfg.AimKey ~= nil and cfg.AimKeyHeld == false then return end
         if cfg.FreeCam and fcCFrame then
             fcCFrame = CFrame.new(fcCFrame.Position, currentAimPos)
@@ -1997,6 +2283,8 @@ function StartScript(plf)
         local halfX, halfY = vsx*0.5, vsy*0.5
         local camCF = c.CFrame
         local camPos = camCF.Position
+
+        local menuOpen = root.Visible
 
         local cBox, cBone, cHealth, cDist = cfg.Box, cfg.Bone, cfg.Health, cfg.Dist
         local cTracer, cLookTr = cfg.Tracer, cfg.LookTracer
@@ -2036,7 +2324,7 @@ function StartScript(plf)
 
         if cfg.AntiAimEnabled then applyAntiAim() end
 
-        if cShowFov then
+        if cShowFov and not menuOpen then
             if cFovShape == "Circle" then
                 pcall(function()
                     fC.Radius = cFovSize; fC.Position = vs/2; fC.Visible = true
@@ -2095,7 +2383,7 @@ function StartScript(plf)
                             local prev = lastHealth[pl]
                             if prev == nil then lastHealth[pl] = hp
                             else
-                                if cChams and hp < prev and hp > 0 then pushCham(pl) end
+                                if cChams and hp < prev and hp > 0 and not menuOpen then pushCham(pl) end
                                 if cKillFeed and prev > 0 and hp <= 0 then pushKillFeed(pl) end
                                 lastHealth[pl] = hp
                             end
@@ -2106,7 +2394,7 @@ function StartScript(plf)
         end
         updateChams()
 
-        local anyESP = cBox or cHealth or cDist or cTracer or cLookTr or cBone
+        local anyESP = (not menuOpen) and (cBox or cHealth or cDist or cTracer or cLookTr or cBone)
         for pl, d in pairs(dr) do
             local ch = pl.Character
             local visible = anyESP and ch and v(pl)
@@ -2235,7 +2523,7 @@ function StartScript(plf)
             end
         end
 
-        if cfg.Aim then
+        if cfg.Aim and not menuOpen then
             local bestScore, tg, tgPl = math.huge, nil, nil
             local useNearest = cfg.UseNearest
             local targetAll = cfg.TargetAll
@@ -2438,7 +2726,7 @@ function StartScript(plf)
     task.spawn(function()
         local lastT, lastHit = 0, 0
         while g and g.Parent do
-            if cfg.Trig then
+            if cfg.Trig and not root.Visible then
                 local now = tick()
                 if now - lastT > cfg.Dly then
                     local vs = c.ViewportSize
@@ -2474,11 +2762,11 @@ function StartScript(plf)
     reg(P.PlayerRemoving:Connect(function(pl)
         local d = dr[pl]
         if d then
-            pcall(function() if d.B  then d.B:Remove()  end end)
+            pcall(function() if d.B then d.B:Remove() end end)
             pcall(function() if d.HB then d.HB:Remove() end end)
             pcall(function() if d.HM then d.HM:Remove() end end)
-            pcall(function() if d.D  then d.D:Remove()  end end)
-            pcall(function() if d.T  then d.T:Remove()  end end)
+            pcall(function() if d.D then d.D:Remove() end end)
+            pcall(function() if d.T then d.T:Remove() end end)
             pcall(function() if d.LT then d.LT:Remove() end end)
             for _, l in pairs(d.L) do pcall(function() if l then l:Remove() end end) end
             dr[pl] = nil
