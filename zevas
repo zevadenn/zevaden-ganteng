@@ -1,20 +1,8 @@
 --[[
-  Zeva v6.9.1 — patched build
-  Fixes applied:
-    [F1]  v(pl) TeamCheck nil-team guard
-    [F2]  PartColors cleared on rebuild (Change Device no longer bricks Body tab)
-    [F3]  FOV shape exclusivity (only one Drawing visible at a time)
-    [F4]  keybind listener respects gameProcessedEvent
-    [F5]  BigHeadHideVisual toggle-off restores children
-    [F6]  FreeCam / Aim CFrame priority split (no overwrite fight)
-    [F7]  RemoteEvent override replaced with __namecall hook w/ fallback
-    [F8]  Triggerbot fire-rate floor
-    [F9]  bh_isTarget exact-name whitelist
-    [F10] Silent sound pack no longer feeds "" to SoundId
-    [F11] currentPlatform localized
-    [F12] refreshPlayers targets prefixed rows only
-    [F13] FreeCam key listeners gated on cfg.FreeCam
-    [F14] Reset now clears PartColors
+  Zeva v6.9.2 — magic bullet build
+  - BigHead renamed to Magic Bullet
+  - Invisibility is baked in, no toggle
+  - Invisible Head button removed from Aim tab
 --]]
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
@@ -70,8 +58,7 @@ if not CAP.Drawing then
     return
 end
 
--- [F7] RemoteEvent firewall — try modern hookmetamethod, fall back to silent noop.
--- Direct method reassignment is dead on modern Roblox; this actually works.
+-- [F7] RemoteEvent firewall via __namecall hook
 pcall(function()
     local protected = {}
     for _, name in ipairs({"MobileAntiCheatRE", "aSKbG03ajK"}) do
@@ -131,7 +118,6 @@ local function clearSelectors()
     end
 end
 
--- [F11] currentPlatform is now a proper upvalue, not a global.
 local currentPlatform = "PC"
 
 local TERM = {
@@ -420,7 +406,8 @@ function StartScript(plf)
         WallHop=false, WallHopPower=50,
         FPSBooster=false, FPSOverlay=false,
         FreeCam=false, FreeCamSpeed=60,
-        BigHead=false, BigHeadSizeNum=20, BigHeadHideVisual=true,
+        -- [MAGIC BULLET] expanded hitbox, invisibility baked in
+        BigHead=false, BigHeadSizeNum=20,
     }
 
     local FEATURE_INDEX = {}
@@ -481,11 +468,10 @@ function StartScript(plf)
     local aaYawAccum = 0
 
     -- ============================================================
-    -- BIG HEAD engine
+    -- MAGIC BULLET engine
     -- ============================================================
     local bhCache = {}
 
-    -- [F9] exact-name whitelist; substring "head" removed (matched HeadMesh / forehead / etc.)
     local BH_NAMES = { Head = true, Hitbox = true, ["Head Hitbox"] = true }
     local function bh_isTarget(part)
         if not part:IsA("BasePart") then return false end
@@ -562,6 +548,11 @@ function StartScript(plf)
         snap.children = {}
     end
 
+    -- [MAGIC BULLET] Expand the target's head hitbox into a large invisible cube.
+    -- CanQuery=true -> every raycast (yours + server-side recheck) lands on it.
+    -- CanCollide=false -> no physics push, walk through freely.
+    -- CanTouch=false -> no touch-triggered events.
+    -- Transparency forced to 1 + all visuals stripped -> completely unseen.
     local function bh_expand(part)
         bh_snapshot(part)
         local n = cfg.BigHeadSizeNum or 20
@@ -571,16 +562,9 @@ function StartScript(plf)
         part.CanQuery   = true
         part.CanTouch   = false
         part.Massless   = true
-        if cfg.BigHeadHideVisual then
-            part.Transparency              = 1
-            part.LocalTransparencyModifier = 1
-            bh_hideChildren(part)
-        else
-            -- [F5] restore hidden children when HideVisual is off
-            part.Transparency              = part.Transparency
-            part.LocalTransparencyModifier = 0
-            bh_restoreChildren(part)
-        end
+        part.Transparency              = 1
+        part.LocalTransparencyModifier = 1
+        bh_hideChildren(part)
     end
 
     local function bh_restore(part)
@@ -855,7 +839,7 @@ function StartScript(plf)
     titleText.TextXAlignment = Enum.TextXAlignment.Left
     local subText = Instance.new("TextLabel", title)
     subText.Size, subText.Position, subText.BackgroundTransparency, subText.Text, subText.TextColor3, subText.Font, subText.TextSize =
-        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9.1", TH.TextMute, FONT, 11
+        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9.2", TH.TextMute, FONT, 11
     subText.TextXAlignment = Enum.TextXAlignment.Left
     subText.Visible = isPC
     local hintText = Instance.new("TextLabel", title)
@@ -1143,7 +1127,6 @@ function StartScript(plf)
             listening = true; b.Text = "press a key..."
             task.wait(0.15)
             local conn
-            -- [F4] gameProcessedEvent guard: typing in chat no longer binds keys
             conn = U.InputBegan:Connect(function(input, gpe)
                 if gpe then return end
                 if not listening then if conn then conn:Disconnect() end; return end
@@ -1243,22 +1226,11 @@ function StartScript(plf)
         BUILD_PAGE = "Aim"
         local s = section(pages["Aim"], "combat")
         toggle(s, "Aimlock", "Aim", false, function(v) cfg.Aim = v end)
-        toggle(s, "Big Head (Hitbox)", "BigHead", false, function(v)
+        toggle(s, "Magic Bullet", "BigHead", false, function(v)
             cfg.BigHead = v
             if not v then BH_restoreAll() end
         end)
-        slider(s, "Hitbox Size", "BigHeadSizeNum", 5, 50, 20, function(v) cfg.BigHeadSizeNum = v end)
-        toggle(s, "Invisible Head", "BigHeadHideVisual", true, function(v)
-            cfg.BigHeadHideVisual = v
-            -- [F5] restore children immediately when toggling off while active
-            if not v and cfg.BigHead then
-                for part in pairs(bhCache) do
-                    part.Transparency = part.Transparency
-                    part.LocalTransparencyModifier = 0
-                    bh_restoreChildren(part)
-                end
-            end
-        end)
+        slider(s, "Bullet Size", "BigHeadSizeNum", 5, 50, 20, function(v) cfg.BigHeadSizeNum = v end)
         toggle(s, "Wallcheck", "WallCheck", false, function(v) cfg.WallCheck = v end)
         toggle(s, "Triggerbot", "Trig", false, function(v) cfg.Trig = v end)
         toggle(s, "Hit Sound", "HitSound", false, function(v) cfg.HitSound = v end)
@@ -1410,7 +1382,6 @@ function StartScript(plf)
 
     do
         BUILD_PAGE = "Body"
-        -- [F2][F14] PartColors is scoped to the current Body build; cleared on any rebuild
         cfg.PartColors = {}
         local s = section(pages["Body"], "hitbox diagram")
         local d = Instance.new("Frame", s)
@@ -1469,7 +1440,6 @@ function StartScript(plf)
         button(s, "Clear Manual List", function() cfg.TargetList = {} end)
         local s2 = section(pages["Target"], "players")
         local function refreshPlayers()
-            -- [F12] only destroy our prefixed rows, leave section header buttons intact
             for _, ch in ipairs(s2:GetChildren()) do
                 if ch:IsA("TextButton") and ch:GetAttribute("zevaRow") then ch:Destroy() end
             end
@@ -1545,7 +1515,7 @@ function StartScript(plf)
             cfg.MenuSound=true; cfg.AccentColor = Color3.fromRGB(140,190,255)
             cfg.SelectedParts = {["Head"]=true}
             cfg.TargetList = {}
-            cfg.BigHead=false; cfg.BigHeadSizeNum=20; cfg.BigHeadHideVisual=true
+            cfg.BigHead=false; cfg.BigHeadSizeNum=20
             BH_restoreAll()
             applyAccent(cfg.AccentColor)
             if hintText and plf == "PC" then
@@ -1603,7 +1573,6 @@ function StartScript(plf)
             UDim2.new(0.6,-10,1,0), UDim2.new(0.4,0,0,0), TH.Panel2, cfg.SoundPack, TH.Accent, FONTB, 11
         spB.AutoButtonColor, spB.BorderSizePixel = false, 0
         round(spB, 6); stroke(spB, TH.LineSoft, 1, 0.4); regAccent(spB, "TextColor3")
-        -- [F10] Silent no longer feeds "" to SoundId; use rbxassetid://0 placeholder
         local sIds = {Default="rbxassetid://2865227271", Soft="rbxassetid://131961136", Hard="rbxassetid://911409889", Silent="rbxassetid://0"}
         spB.MouseButton1Click:Connect(function()
             spIdx = spIdx % #spOpts + 1; cfg.SoundPack = spOpts[spIdx]; spB.Text = cfg.SoundPack
@@ -1667,7 +1636,6 @@ function StartScript(plf)
             if _G.__zeva_radarGui then pcall(function() _G.__zeva_radarGui.sg:Destroy() end); _G.__zeva_radarGui = nil end
             if _G.__zeva_fpsGui then pcall(function() _G.__zeva_fpsGui.sg:Destroy() end); _G.__zeva_fpsGui = nil end
             pcall(function() g:Destroy() end)
-            -- [F14] drop stale PartColors closures on teardown
             cfg.PartColors = {}
         end
         db.MouseButton1Click:Connect(teardown)
@@ -1740,7 +1708,6 @@ function StartScript(plf)
         end))
     end
 
-    -- [F13] freecam key listeners only respond when freecam is on
     reg(U.InputBegan:Connect(function(input, gpe)
         if gpe or not cfg.FreeCam then return end
         if input.KeyCode == Enum.KeyCode.W then fcKeys.W = true end
@@ -1778,7 +1745,6 @@ function StartScript(plf)
         end)
     end)
 
-    -- [F1] nil-team guard so TeamCheck doesn't nuke every target when neither side has a team
     local function v(pl)
         if not pl or pl == p then return false end
         if cfg.TeamCheck and pl.Team ~= nil and pl.Team == p.Team then return false end
@@ -2010,8 +1976,6 @@ function StartScript(plf)
 
     local currentAimPos = nil
 
-    -- [F6] Aim runs at a higher RenderStep priority than freecam so it doesn't fight the freecam write.
-    -- When freecam is on, aim writes into the freecam CFrame instead of the raw camera.
     reg(RS:BindToRenderStep(bindName, 200, function()
         if not cfg.Aim or not currentAimPos then return end
         if isPC and cfg.AimKey ~= nil and cfg.AimKeyHeld == false then return end
@@ -2072,7 +2036,6 @@ function StartScript(plf)
 
         if cfg.AntiAimEnabled then applyAntiAim() end
 
-        -- [F3] FOV shape exclusivity: exactly one Drawing visible at a time
         if cShowFov then
             if cFovShape == "Circle" then
                 pcall(function()
@@ -2496,7 +2459,6 @@ function StartScript(plf)
                                     RS.Heartbeat:Wait()
                                     VIM:SendMouseButtonEvent(scx, scy, 0, false, game, 1)
                                 end)
-                                -- [F8] hard floor on refire interval so RandDelay=0 doesn't cluster shots
                                 lastT = tick() + math.max(0.03, math.random() * cfg.RandDelay)
                                 killStats.hits = killStats.hits + 1
                                 if cfg.HitSound and hitSound and tick() - lastHit > 0.15 then hitSound:Play(); lastHit = tick() end
