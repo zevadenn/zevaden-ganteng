@@ -1,10 +1,12 @@
 --[[
-  Zeva v6.9.7
+  Zeva v6.9.8
   - Key whitelist: keys bound to allowed usernames
   - Discord icon: primary + alt asset, text fallback on 404
   - KO/dead detection: 6-layer (health, state, platformstand, markers, attributes, ragdoll)
   - Aimviewer: pauses visible aimlock while being spectated
   - all prior features preserved
+  - mobile toggle: drawn hamburger (no tofu glyph)
+  - perf: per-frame cfg snapshot, hoisted RaycastParams, per-character bh ownership
 ]]
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
@@ -241,8 +243,7 @@ local function stroke(o, col, th, tr) local s = Instance.new("UIStroke"); s.Colo
 local function tw(o, t, pr) local ti = TweenInfo.new(t or 0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out); local tn = TS:Create(o, ti, pr); tn:Play(); return tn end
 
 -- ============================================================
--- KEY WHITELIST — key -> list of allowed usernames (lowercase compare)
--- Empty list {} = anyone can use that key
+-- KEY WHITELIST
 -- ============================================================
 local KEY_WHITELIST = {
     ["zevadenganteng"] = { "zevadenalt" },
@@ -604,6 +605,7 @@ function buildScanScreen(onDone)
     status.ZIndex = 2
 
     local MAX_LOG_LINES = 10
+    local logLines = {}
     local function addLine(txt, col)
         local l = Instance.new("TextLabel", logHolder)
         l.BackgroundTransparency = 1
@@ -613,11 +615,11 @@ function buildScanScreen(onDone)
         l.Size = UDim2.new(1, 0, 0, 15)
         l.Text = txt
         l.ZIndex = 2
-        local lines = {}
-        for _, ch in ipairs(logHolder:GetChildren()) do
-            if ch:IsA("TextLabel") then table.insert(lines, ch) end
+        table.insert(logLines, l)
+        if #logLines > MAX_LOG_LINES then
+            local old = table.remove(logLines, 1)
+            if old then old:Destroy() end
         end
-        if #lines > MAX_LOG_LINES then lines[1]:Destroy() end
         return l
     end
 
@@ -724,6 +726,27 @@ function buildScanScreen(onDone)
     end)
 end
 
+-- ============================================================
+-- HOISTED CONSTANTS (avoid per-call table alloc)
+-- ============================================================
+local KO_MARKERS = {
+    {"BodyEffects", "K.O"}, {"BodyEffects", "KO"}, {"BodyEffects", "Knocked"},
+    {"BodyEffects", "Downed"}, {"BodyEffects", "Dead"}, {"BodyEffects", "Ragdoll"},
+    {"Knock", false}, {"Knockout", false}, {"Downed", false}, {"Ragdoll", false},
+    {"KO", false}, {"K.O", false},
+}
+local KO_ATTRS = {
+    "K.O", "KO", "Knocked", "IsKnocked", "Downed", "IsDowned",
+    "Dead", "IsDead", "Alive", "Ragdolled", "IsRagdolled",
+}
+local SPECTATE_ATTRS = {
+    "Spectating", "SpectateTarget", "Watching", "WatchingPlayer",
+    "IsSpectating", "ViewingPlayer",
+}
+local UI_KBD = Enum.UserInputType.Keyboard
+local UI_M2  = Enum.UserInputType.MouseButton2
+local UI_M3  = Enum.UserInputType.MouseButton3
+
 function StartScript(plf)
     for _, ch in ipairs(p.PlayerGui:GetChildren()) do
         if ch.Name:find("^zeva_scan_") then ch:Destroy() end
@@ -743,6 +766,7 @@ function StartScript(plf)
         local s = Instance.new("Sound", SS)
         s.SoundId, s.Volume = "rbxassetid://4444585141", 0.5
         s:Play()
+        task.delay(3, function() pcall(function() s:Destroy() end) end)
     end)
 
     local cfg = {
@@ -785,9 +809,9 @@ function StartScript(plf)
     local function refreshAllFromCfg() for _, fns in pairs(UI_REFRESH) do for _, fn in ipairs(fns) do pcall(fn) end end end
 
     local conns = {}
-    local function reg(c) if c then table.insert(conns, c) end return c end
+    local function reg(con) if con then table.insert(conns, con) end return con end
     local function disconnectAll()
-        for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+        for _, con in ipairs(conns) do pcall(function() con:Disconnect() end) end
         conns = {}
     end
 
@@ -829,11 +853,14 @@ function StartScript(plf)
     local killFeed = {}
     local aaYawAccum = 0
 
+    -- ============================================================
+    -- MAGIC BULLET (BIG HEAD) — per-character ownership
+    -- ============================================================
     local bhCache = {}
+    local bhCharSet = {}   -- [character] = {parts...}
     local BH_NAMES = { Head = true, Hitbox = true, ["Head Hitbox"] = true }
     local function bh_isTarget(part)
-        if not part:IsA("BasePart") then return false end
-        return BH_NAMES[part.Name] == true
+        return part:IsA("BasePart") and BH_NAMES[part.Name] == true
     end
 
     local function bh_snapshot(part)
@@ -850,8 +877,8 @@ function StartScript(plf)
         local snap = bhCache[part]
         if not snap then return end
         for _, ch in ipairs(part:GetDescendants()) do
-            if not snap.children[ch] then snap.children[ch] = {} end
             local saved = snap.children[ch]
+            if not saved then saved = {}; snap.children[ch] = saved end
             if ch:IsA("Decal") or ch:IsA("Texture") or ch:IsA("SurfaceAppearance") then
                 if saved.Transparency == nil then saved.Transparency = ch.Transparency end
                 ch.Transparency = 1
@@ -875,10 +902,9 @@ function StartScript(plf)
                 ch.Transparency = 1
                 for _, cc in ipairs(ch:GetDescendants()) do
                     if cc:IsA("Decal") or cc:IsA("Texture") then
-                        if not snap.children[cc] then snap.children[cc] = {} end
-                        if snap.children[cc].Transparency == nil then
-                            snap.children[cc].Transparency = cc.Transparency
-                        end
+                        local sc = snap.children[cc]
+                        if not sc then sc = {}; snap.children[cc] = sc end
+                        if sc.Transparency == nil then sc.Transparency = cc.Transparency end
                         cc.Transparency = 1
                     end
                 end
@@ -932,12 +958,22 @@ function StartScript(plf)
         bhCache[part] = nil
     end
 
+    local function bh_restoreCharacter(char)
+        local set = bhCharSet[char]
+        if not set then return end
+        for i = #set, 1, -1 do bh_restore(set[i]) end
+        bhCharSet[char] = nil
+    end
+
     function BH_restoreAll()
-        for part in pairs(bhCache) do bh_restore(part) end
+        for char in pairs(bhCharSet) do bh_restoreCharacter(char) end
     end
 
     local lastJumpFire = 0
 
+    -- ============================================================
+    -- FPS BOOSTER
+    -- ============================================================
     local fpsBoosted = false
     local fpsConns = nil
     local fpsRevert = {}
@@ -1016,8 +1052,25 @@ function StartScript(plf)
         fpsRevert = {}
     end
 
+    -- ============================================================
+    -- FREE CAM
+    -- ============================================================
     local fcCFrame, fcControlsDisabled
     local fcKeys = {W=false, A=false, S=false, D=false, Q=false, E=false}
+
+    local function fcToggleControls(enable)
+        pcall(function()
+            local playerScripts = p.PlayerScripts
+            local playerModule = playerScripts:FindFirstChild("PlayerModule")
+            if playerModule then
+                local controls = require(playerModule):GetControls()
+                if controls then
+                    if enable then controls:Enable() else controls:Disable() end
+                end
+            end
+        end)
+    end
+
     local function fcStart()
         local char = p.Character; if not char then return end
         fcCFrame = c.CFrame
@@ -1025,15 +1078,10 @@ function StartScript(plf)
         c.CameraSubject = nil
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum then hum.WalkSpeed = 0; hum.JumpPower = 0; hum.JumpHeight = 0 end
-        pcall(function()
-            local pm = p:FindFirstChild("PlayerScripts")
-            local playerModule = pm and pm:FindFirstChild("PlayerModule")
-            if playerModule then
-                local controls = require(playerModule):GetControls()
-                if controls then controls:Disable(); fcControlsDisabled = true end
-            end
-        end)
+        fcToggleControls(false)
+        fcControlsDisabled = true
     end
+
     local function fcStop()
         c.CameraType = Enum.CameraType.Custom
         local char = p.Character
@@ -1042,17 +1090,7 @@ function StartScript(plf)
             if hum then c.CameraSubject = hum; hum.WalkSpeed = 16; hum.JumpPower = 50; hum.JumpHeight = 7.2 end
         end
         fcCFrame = nil
-        if fcControlsDisabled then
-            pcall(function()
-                local pm = p:FindFirstChild("PlayerScripts")
-                local playerModule = pm and pm:FindFirstChild("PlayerModule")
-                if playerModule then
-                    local controls = require(playerModule):GetControls()
-                    if controls then controls:Enable() end
-                end
-            end)
-            fcControlsDisabled = false
-        end
+        if fcControlsDisabled then fcToggleControls(true); fcControlsDisabled = false end
     end
 
     local function autoHop()
@@ -1117,6 +1155,9 @@ function StartScript(plf)
     local isPC = (plf == "PC")
     local W, H = isPC and 780 or 620, isPC and 480 or 400
 
+    -- ============================================================
+    -- GUI SHELL
+    -- ============================================================
     local g = Instance.new("ScreenGui", p.PlayerGui)
     g.Name = "zeva_" .. tostring(math.random(1e6, 9e6))
     g.ResetOnSpawn = false; g.IgnoreGuiInset = true
@@ -1144,13 +1185,15 @@ function StartScript(plf)
     titleText.TextXAlignment = Enum.TextXAlignment.Left
     local subText = Instance.new("TextLabel", title)
     subText.Size, subText.Position, subText.BackgroundTransparency, subText.Text, subText.TextColor3, subText.Font, subText.TextSize =
-        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9.7", TH.TextMute, FONT, 11
+        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9.8", TH.TextMute, FONT, 11
     subText.TextXAlignment = Enum.TextXAlignment.Left
     subText.Visible = isPC
+
+    -- [FIX] no tofu glyph
     local hintText = Instance.new("TextLabel", title)
     hintText.Size, hintText.Position, hintText.BackgroundTransparency, hintText.Text, hintText.TextColor3, hintText.Font, hintText.TextSize =
         UDim2.new(0,130,1,0), UDim2.new(1,-320,0,0), 1,
-        plf == "PC" and ("["..keyName(cfg.HideKey).."]  to hide") or "tap ☰ to toggle",
+        plf == "PC" and ("["..keyName(cfg.HideKey).."]  to hide") or "tap menu to toggle",
         TH.TextMute, FONT, 10
     hintText.TextXAlignment = Enum.TextXAlignment.Right
 
@@ -1279,6 +1322,9 @@ function StartScript(plf)
         if setclipboard then setclipboard("https://discord.gg/nN9F6kFrmc") end
     end)
 
+    -- ============================================================
+    -- UI BUILDERS
+    -- ============================================================
     local function setTab(name)
         activeTab = name
         for n, data in pairs(tabButtons) do
@@ -1479,18 +1525,18 @@ function StartScript(plf)
             conn = U.InputBegan:Connect(function(input, gpe)
                 if gpe then return end
                 if not listening then if conn then conn:Disconnect() end; return end
-                local isKey = input.UserInputType == Enum.UserInputType.Keyboard
+                local isKey = input.UserInputType == UI_KBD
                 local isL = input.UserInputType == UIT_M1
-                local isR = input.UserInputType == Enum.UserInputType.MouseButton2
-                local isM = input.UserInputType == Enum.UserInputType.MouseButton3
+                local isR = input.UserInputType == UI_M2
+                local isM = input.UserInputType == UI_M3
                 if isKey or isL or isR or isM then
                     if conn then conn:Disconnect() end
                     listening = false
                     local key
                     if isKey then key = input.KeyCode
                     elseif isL then key = UIT_M1
-                    elseif isR then key = Enum.UserInputType.MouseButton2
-                    else key = Enum.UserInputType.MouseButton3 end
+                    elseif isR then key = UI_M2
+                    else key = UI_M3 end
                     if key == Enum.KeyCode.Escape then b.Text = keyName(getKey())
                     elseif key == Enum.KeyCode.Backspace then setKey(nil); b.Text = "None"
                     else setKey(key); b.Text = keyName(key) end
@@ -1523,6 +1569,7 @@ function StartScript(plf)
         return sw
     end
 
+    -- window drag
     do
         local dragging, ds, sp
         title.InputBegan:Connect(function(i) if i.UserInputType == UIT_M1 or i.UserInputType == UIT_TCH then dragging = true; ds = i.Position; sp = root.Position end end)
@@ -1544,11 +1591,20 @@ function StartScript(plf)
             end
         end))
     else
+        -- [FIX] drawn hamburger instead of tofu glyph
         local opB = Instance.new("TextButton", g)
-        opB.Size, opB.Position, opB.BackgroundColor3, opB.Text, opB.TextColor3, opB.Font, opB.TextSize =
-            UDim2.new(0,50,0,50), UDim2.new(0,20,0.5,-25), TH.Panel, "☰", TH.Text, FONTB, 20
+        opB.Size, opB.Position, opB.BackgroundColor3, opB.Text =
+            UDim2.new(0,50,0,50), UDim2.new(0,20,0.5,-25), TH.Panel, ""
+        opB.TextColor3, opB.Font, opB.TextSize = TH.Text, FONTB, 20
         opB.AutoButtonColor, opB.BorderSizePixel, opB.Active = false, 0, true
         round(opB, 10); stroke(opB, TH.Accent, 1, 0.3)
+        for i = 0, 2 do
+            local bar = Instance.new("Frame", opB)
+            bar.Size     = UDim2.new(0, 22, 0, 2)
+            bar.Position = UDim2.new(0.5, -11, 0.5, -8 + i * 7)
+            bar.BackgroundColor3, bar.BorderSizePixel = TH.Text, 0
+            round(bar, 1)
+        end
         local dragging, ds, sp, moved
         opB.InputBegan:Connect(function(i) if i.UserInputType == UIT_M1 or i.UserInputType == UIT_TCH then dragging, moved, ds, sp = true, false, i.Position, opB.Position end end)
         U.InputChanged:Connect(function(i) if dragging and (i.UserInputType == UIT_MMV or i.UserInputType == UIT_TCH) then
@@ -1571,6 +1627,9 @@ function StartScript(plf)
     makeTab("Aim"); makeTab("ESP"); makeTab("Move"); makeTab("Perf"); makeTab("Set"); makeTab("Body"); makeTab("Target"); makeTab("Settings")
     makePage("Aim"); makePage("ESP"); makePage("Move"); makePage("Perf"); makePage("Set"); makePage("Body"); makePage("Target"); makePage("Settings")
 
+    -- ============================================================
+    -- AIM PAGE
+    -- ============================================================
     do
         BUILD_PAGE = "Aim"
         local s = section(pages["Aim"], "combat")
@@ -1671,6 +1730,9 @@ function StartScript(plf)
         regFeature("Detector Poll", "Aim", svDelay)
     end
 
+    -- ============================================================
+    -- ESP PAGE
+    -- ============================================================
     do
         BUILD_PAGE = "ESP"
         local s = section(pages["ESP"], "visuals")
@@ -1696,6 +1758,9 @@ function StartScript(plf)
         numInput(s3, "Font Size", "ESPFontSize", 12)
     end
 
+    -- ============================================================
+    -- MOVE PAGE
+    -- ============================================================
     do
         BUILD_PAGE = "Move"
         local s = section(pages["Move"], "movement")
@@ -1727,6 +1792,9 @@ function StartScript(plf)
         slider(aa, "AA Spin Speed", "AntiAimSpinSpeed", 0, 45, 8, function(v) cfg.AntiAimSpinSpeed = v end)
     end
 
+    -- ============================================================
+    -- PERF PAGE
+    -- ============================================================
     do
         BUILD_PAGE = "Perf"
         local s = section(pages["Perf"], "performance")
@@ -1740,6 +1808,9 @@ function StartScript(plf)
         slider(fc, "Free Cam Speed", "FreeCamSpeed", 20, 200, 60, function(v) cfg.FreeCamSpeed = v end)
     end
 
+    -- ============================================================
+    -- SET PAGE
+    -- ============================================================
     do
         BUILD_PAGE = "Set"
         local s = section(pages["Set"], "aim tuning")
@@ -1754,6 +1825,9 @@ function StartScript(plf)
         numInput(s, "Max Trigger Dist", "MaxTriggerDist", cfg.MaxTriggerDist, function(v) cfg.MaxTriggerDist = v end)
     end
 
+    -- ============================================================
+    -- BODY PAGE
+    -- ============================================================
     do
         BUILD_PAGE = "Body"
         cfg.PartColors = {}
@@ -1806,6 +1880,9 @@ function StartScript(plf)
         regFeature("Nearest Part", BUILD_PAGE, nb)
     end
 
+    -- ============================================================
+    -- TARGET PAGE
+    -- ============================================================
     do
         BUILD_PAGE = "Target"
         local s = section(pages["Target"], "target options")
@@ -1841,6 +1918,9 @@ function StartScript(plf)
         regRefresh("TargetList", refreshPlayers)
     end
 
+    -- ============================================================
+    -- SETTINGS PAGE
+    -- ============================================================
     do
         BUILD_PAGE = "Settings"
         local s = section(pages["Settings"], "config")
@@ -1925,9 +2005,10 @@ function StartScript(plf)
             end, false)
             toggle(s3, "Aim Key: Toggle Mode", "AimToggleMode", false, function(v) cfg.AimToggleMode = v end)
         else
+            -- [FIX] no tofu
             local note = Instance.new("TextLabel", s3)
             note.Size, note.BackgroundTransparency, note.Text, note.TextColor3, note.Font, note.TextSize =
-                UDim2.new(1,0,0,24), 1, "No keybinds on mobile — tap the ☰ button to toggle", TH.TextMute, FONT, 11
+                UDim2.new(1,0,0,24), 1, "No keybinds on mobile — tap the menu button to toggle", TH.TextMute, FONT, 11
             note.TextXAlignment = Enum.TextXAlignment.Left
         end
         local s4 = section(pages["Settings"], "audio")
@@ -2015,6 +2096,9 @@ function StartScript(plf)
         cd.MouseButton1Click:Connect(function() teardown(); task.wait(0.05); buildSelector() end)
     end
 
+    -- ============================================================
+    -- SEARCH
+    -- ============================================================
     local function performSearch(q)
         q = q:lower():gsub("^%s+",""):gsub("%s+$","")
         if q == "" then return end
@@ -2059,6 +2143,9 @@ function StartScript(plf)
         if e and #searchBox.Text > 0 then performSearch(searchBox.Text); searchBox.Text = "" end
     end)
 
+    -- ============================================================
+    -- AIM KEY INPUT
+    -- ============================================================
     local function inputMatchesAimKey(input)
         if cfg.AimKey == nil then return false end
         if typeof(cfg.AimKey) == "EnumItem" then
@@ -2083,20 +2170,22 @@ function StartScript(plf)
 
     reg(U.InputBegan:Connect(function(input, gpe)
         if gpe or not cfg.FreeCam then return end
-        if input.KeyCode == Enum.KeyCode.W then fcKeys.W = true end
-        if input.KeyCode == Enum.KeyCode.A then fcKeys.A = true end
-        if input.KeyCode == Enum.KeyCode.S then fcKeys.S = true end
-        if input.KeyCode == Enum.KeyCode.D then fcKeys.D = true end
-        if input.KeyCode == Enum.KeyCode.Q then fcKeys.Q = true end
-        if input.KeyCode == Enum.KeyCode.E then fcKeys.E = true end
+        local k = input.KeyCode
+        if k == Enum.KeyCode.W then fcKeys.W = true
+        elseif k == Enum.KeyCode.A then fcKeys.A = true
+        elseif k == Enum.KeyCode.S then fcKeys.S = true
+        elseif k == Enum.KeyCode.D then fcKeys.D = true
+        elseif k == Enum.KeyCode.Q then fcKeys.Q = true
+        elseif k == Enum.KeyCode.E then fcKeys.E = true end
     end))
     reg(U.InputEnded:Connect(function(input)
-        if input.KeyCode == Enum.KeyCode.W then fcKeys.W = false end
-        if input.KeyCode == Enum.KeyCode.A then fcKeys.A = false end
-        if input.KeyCode == Enum.KeyCode.S then fcKeys.S = false end
-        if input.KeyCode == Enum.KeyCode.D then fcKeys.D = false end
-        if input.KeyCode == Enum.KeyCode.Q then fcKeys.Q = false end
-        if input.KeyCode == Enum.KeyCode.E then fcKeys.E = false end
+        local k = input.KeyCode
+        if k == Enum.KeyCode.W then fcKeys.W = false
+        elseif k == Enum.KeyCode.A then fcKeys.A = false
+        elseif k == Enum.KeyCode.S then fcKeys.S = false
+        elseif k == Enum.KeyCode.D then fcKeys.D = false
+        elseif k == Enum.KeyCode.Q then fcKeys.Q = false
+        elseif k == Enum.KeyCode.E then fcKeys.E = false end
     end))
     reg(U.InputChanged:Connect(function(input)
         if not cfg.FreeCam or not fcCFrame then return end
@@ -2119,7 +2208,7 @@ function StartScript(plf)
     end)
 
     -- ============================================================
-    -- KNOCK / DEAD DETECTION — 6-layer
+    -- KO / DEAD DETECTION
     -- ============================================================
     local function isKOorDead(pl)
         if not pl or pl == p then return true end
@@ -2136,58 +2225,37 @@ function StartScript(plf)
             if state == Enum.HumanoidStateType.Physics then return true end
         end
 
-        if hum.PlatformStand == true then return true end
+        if hum.PlatformStand then return true end
 
-        local markerChecks = {
-            {"BodyEffects", "K.O"},
-            {"BodyEffects", "KO"},
-            {"BodyEffects", "Knocked"},
-            {"BodyEffects", "Downed"},
-            {"BodyEffects", "Dead"},
-            {"BodyEffects", "Ragdoll"},
-            {"Knock", nil},
-            {"Knockout", nil},
-            {"Downed", nil},
-            {"Ragdoll", nil},
-            {"KO", nil},
-            {"K.O", nil},
-        }
-        for _, entry in ipairs(markerChecks) do
+        for i = 1, #KO_MARKERS do
+            local entry = KO_MARKERS[i]
             local container = ch:FindFirstChild(entry[1])
             if container then
-                if entry[2] == nil then
-                    if container:IsA("BoolValue") and container.Value then return true end
-                    if container:IsA("NumberValue") and container.Value > 0 then return true end
-                    if container:IsA("StringValue") and container.Value ~= "" then return true end
-                else
-                    local flag = container:FindFirstChild(entry[2])
-                    if flag then
-                        if flag:IsA("BoolValue") and flag.Value then return true end
-                        if flag:IsA("NumberValue") and flag.Value > 0 then return true end
-                        if flag:IsA("StringValue") and flag.Value ~= "" then return true end
-                    end
+                local target = entry[2] and container:FindFirstChild(entry[2]) or container
+                if target then
+                    if target:IsA("BoolValue") and target.Value then return true end
+                    if target:IsA("NumberValue") and target.Value > 0 then return true end
+                    if target:IsA("StringValue") and target.Value ~= "" then return true end
                 end
             end
         end
 
-        for _, attrName in ipairs({
-            "K.O", "KO", "Knocked", "IsKnocked", "Downed", "IsDowned",
-            "Dead", "IsDead", "Alive", "Ragdolled", "IsRagdolled",
-        }) do
+        for i = 1, #KO_ATTRS do
+            local attrName = KO_ATTRS[i]
             local okC, val = pcall(function() return ch:GetAttribute(attrName) end)
             if okC and val ~= nil then
                 if attrName == "Alive" then
                     if val == false then return true end
-                else
-                    if val == true or val == "true" then return true end
+                elseif val == true or val == "true" then
+                    return true
                 end
             end
             local okP, val2 = pcall(function() return pl:GetAttribute(attrName) end)
             if okP and val2 ~= nil then
                 if attrName == "Alive" then
                     if val2 == false then return true end
-                else
-                    if val2 == true or val2 == "true" then return true end
+                elseif val2 == true or val2 == "true" then
+                    return true
                 end
             end
         end
@@ -2228,11 +2296,17 @@ function StartScript(plf)
         return true
     end
 
+    -- hoisted RaycastParams for vis
+    local visRayParams = RaycastParams.new()
+    visRayParams.FilterType = Enum.RaycastFilterType.Blacklist
     local function vis(pt)
-        local rp = RaycastParams.new()
-        rp.FilterDescendantsInstances = {p.Character, pt.Parent}
-        rp.FilterType = Enum.RaycastFilterType.Blacklist
-        return not workspace:Raycast(c.CFrame.Position, pt.Position - c.CFrame.Position, rp)
+        local char = p.Character
+        if char then
+            visRayParams.FilterDescendantsInstances = {char, pt.Parent}
+        else
+            visRayParams.FilterDescendantsInstances = {pt.Parent}
+        end
+        return not workspace:Raycast(c.CFrame.Position, pt.Position - c.CFrame.Position, visRayParams)
     end
 
     local velHist = {}
@@ -2268,34 +2342,26 @@ function StartScript(plf)
     reg(P.PlayerRemoving:Connect(refreshPlayerCache))
 
     -- ============================================================
-    -- AIMVIEWER — spectate detector
+    -- AIMVIEWER
     -- ============================================================
     local spectator = { watching = false, who = nil, lastCheck = 0 }
 
     local function detectSpectator()
         for i = 1, #cachedPlayerList do
             local pl = cachedPlayerList[i]
-
-            for _, attrName in ipairs({
-                "Spectating", "SpectateTarget", "Watching", "WatchingPlayer",
-                "IsSpectating", "ViewingPlayer",
-            }) do
-                local ok, val = pcall(function() return pl:GetAttribute(attrName) end)
+            for j = 1, #SPECTATE_ATTRS do
+                local ok, val = pcall(function() return pl:GetAttribute(SPECTATE_ATTRS[j]) end)
                 if ok and val ~= nil then
-                    if val == p or val == p.Name or val == p.UserId
-                       or val == tostring(p.UserId) then
+                    if val == p or val == p.Name or val == p.UserId or val == tostring(p.UserId) then
                         return true, pl
                     end
                 end
             end
-
             local ch = pl.Character
             if ch then
                 local hum = ch:FindFirstChildOfClass("Humanoid")
-                if hum and hum.CameraSubject and p.Character then
-                    if hum.CameraSubject:IsDescendantOf(p.Character) then
-                        return true, pl
-                    end
+                if hum and hum.CameraSubject and p.Character and hum.CameraSubject:IsDescendantOf(p.Character) then
+                    return true, pl
                 end
             end
         end
@@ -2307,17 +2373,13 @@ function StartScript(plf)
             task.wait(cfg.SpectateDelay or 0.35)
             if cfg.Aim and cfg.SpectateDetect then
                 local watching, who = detectSpectator()
-                spectator.watching = watching
-                spectator.who = who
-                spectator.lastCheck = tick()
+                spectator.watching, spectator.who, spectator.lastCheck = watching, who, tick()
             else
-                spectator.watching = false
-                spectator.who = nil
+                spectator.watching, spectator.who = false, nil
             end
         end
     end)
 
-    -- live status label updater
     task.spawn(function()
         while g and g.Parent do
             task.wait(0.25)
@@ -2339,35 +2401,31 @@ function StartScript(plf)
         end
     end)
 
-    -- attach the live status label into the aimviewer section
+    -- attach live status label into aimviewer section
     do
-        local sectionHolder = pages["Aim"]:FindFirstChild("svStatusHolder")
-        if not sectionHolder then
-            local aimViewer = nil
-            for _, ch in ipairs(pages["Aim"]:GetDescendants()) do
-                if ch:IsA("TextLabel") and ch.Text == "AIMVIEWER" then
-                    aimViewer = ch.Parent.Parent
-                    break
-                end
+        local aimViewer = nil
+        for _, ch in ipairs(pages["Aim"]:GetDescendants()) do
+            if ch:IsA("TextLabel") and ch.Text == "AIMVIEWER" then
+                aimViewer = ch.Parent.Parent
+                break
             end
-            if aimViewer then
-                local inner = aimViewer:FindFirstChild("svStatusHost")
-                if not inner then
-                    local svStatus = Instance.new("TextLabel", aimViewer)
-                    svStatus.Name = "svStatus"
-                    svStatus.Size, svStatus.BackgroundTransparency =
-                        UDim2.new(1,-32,0,20), 1
-                    svStatus.Position = UDim2.new(0,16,0,0)
-                    svStatus.Text = "status: idle"
-                    svStatus.TextColor3 = TH.TextMute
-                    svStatus.Font = FONT
-                    svStatus.TextSize = 11
-                    svStatus.TextXAlignment = Enum.TextXAlignment.Left
-                end
-            end
+        end
+        if aimViewer then
+            local svStatus = Instance.new("TextLabel", aimViewer)
+            svStatus.Name = "svStatus"
+            svStatus.Size, svStatus.BackgroundTransparency = UDim2.new(1,-32,0,20), 1
+            svStatus.Position = UDim2.new(0,16,0,0)
+            svStatus.Text = "status: idle"
+            svStatus.TextColor3 = TH.TextMute
+            svStatus.Font = FONT
+            svStatus.TextSize = 11
+            svStatus.TextXAlignment = Enum.TextXAlignment.Left
         end
     end
 
+    -- ============================================================
+    -- NOCLIP
+    -- ============================================================
     local noclipParts = {}
     local function rebuildNoclipParts()
         noclipParts = {}
@@ -2380,6 +2438,9 @@ function StartScript(plf)
     reg(p.CharacterAdded:Connect(function() task.wait(0.15); rebuildNoclipParts() end))
     task.spawn(function() task.wait(0.15); rebuildNoclipParts() end)
 
+    -- ============================================================
+    -- ESP DRAWING HANDLES
+    -- ============================================================
     local dr = {}
     local function ce(pl)
         if pl == p or dr[pl] then return end
@@ -2493,20 +2554,23 @@ function StartScript(plf)
     buildCrosshair()
 
     local function scoreTarget(pl, part, camPos, scx, scy)
-        if cfg.AimPriority == "Closest" then return (part.Position - camPos).Magnitude
-        elseif cfg.AimPriority == "LowestHP" then
+        if cfg.AimPriority == "Closest" then return (part.Position - camPos).Magnitude end
+        if cfg.AimPriority == "LowestHP" then
             local hum = pl.Character and pl.Character:FindFirstChildOfClass("Humanoid")
             return hum and hum.Health or math.huge
-        elseif cfg.AimPriority == "Visible" then
-            local sp = c:WorldToViewportPoint(part.Position)
-            return (vis(part) and 0 or 100000) + math.sqrt((sp.X-scx)^2 + (sp.Y-scy)^2)
         end
         local sp = c:WorldToViewportPoint(part.Position)
+        if cfg.AimPriority == "Visible" then
+            return (vis(part) and 0 or 100000) + math.sqrt((sp.X-scx)^2 + (sp.Y-scy)^2)
+        end
         return math.sqrt((sp.X-scx)^2 + (sp.Y-scy)^2)
     end
 
     local function pushKillFeed(pl) table.insert(killFeed, {name = pl.DisplayName, born = tick()}) end
 
+    -- ============================================================
+    -- MAGIC BULLET LOOP — per-character ownership, no redundant walk
+    -- ============================================================
     reg(RS.Stepped:Connect(function()
         if not cfg.BigHead then
             if next(bhCache) then BH_restoreAll() end
@@ -2516,17 +2580,42 @@ function StartScript(plf)
             if bh_valid(pl) then
                 local ch = pl.Character
                 if ch then
-                    for _, d in ipairs(ch:GetDescendants()) do
-                        if bh_isTarget(d) then bh_expand(d) end
+                    local set = bhCharSet[ch]
+                    if set then
+                        -- already expanded: just refresh size/collide on owned parts
+                        local n = cfg.BigHeadSizeNum or 20
+                        local target = Vector3.new(n, n, n)
+                        for i = 1, #set do
+                            local part = set[i]
+                            if part and part.Parent then
+                                if part.Size ~= target then part.Size = target end
+                                part.CanCollide = false
+                                part.CanQuery = true
+                                part.CanTouch = false
+                                part.Massless = true
+                                part.Transparency = 1
+                                part.LocalTransparencyModifier = 1
+                            end
+                        end
+                    else
+                        -- first time seeing this character: walk it once
+                        local newSet = {}
+                        for _, d in ipairs(ch:GetDescendants()) do
+                            if bh_isTarget(d) then
+                                bh_expand(d)
+                                table.insert(newSet, d)
+                            end
+                        end
+                        bhCharSet[ch] = newSet
                     end
                 end
             end
         end
-        for part in pairs(bhCache) do
-            local ch = part and part.Parent
-            local pl = ch and P:GetPlayerFromCharacter(ch)
-            if not part or not part.Parent or (pl and not bh_valid(pl)) then
-                bh_restore(part)
+        -- restore characters that are no longer valid / destroyed
+        for char in pairs(bhCharSet) do
+            local pl = P:GetPlayerFromCharacter(char)
+            if not char.Parent or not pl or not bh_valid(pl) then
+                bh_restoreCharacter(char)
             end
         end
     end))
@@ -2537,11 +2626,7 @@ function StartScript(plf)
         if not cfg.Aim or not currentAimPos then return end
         if root.Visible then return end
         if isPC and cfg.AimKey ~= nil and cfg.AimKeyHeld == false then return end
-
-        -- AIMVIEWER: if a spectator is watching, freeze visible motion
-        if cfg.SpectateDetect and spectator.watching then
-            return
-        end
+        if cfg.SpectateDetect and spectator.watching then return end
 
         if cfg.FreeCam and fcCFrame then
             fcCFrame = CFrame.new(fcCFrame.Position, currentAimPos)
@@ -2550,6 +2635,9 @@ function StartScript(plf)
         end
     end))
 
+    -- ============================================================
+    -- MAIN LOOP
+    -- ============================================================
     local fpsFrames, fpsLast, fpsValue, pingValue = 0, tick(), 0, 0
     local chamsAccum = 0
     local killFeedSig = ""
@@ -2561,10 +2649,10 @@ function StartScript(plf)
         local halfX, halfY = vsx*0.5, vsy*0.5
         local camCF = c.CFrame
         local camPos = camCF.Position
-
         local menuOpen = root.Visible
 
-        local cBox, cBone, cHealth, cDist = cfg.Box, cfg.Bone, cfg.Health, cfg.Dist
+        -- per-frame cfg snapshot (one hash lookup set instead of dozens)
+        local cAim, cBox, cBone, cHealth, cDist = cfg.Aim, cfg.Box, cfg.Bone, cfg.Health, cfg.Dist
         local cTracer, cLookTr = cfg.Tracer, cfg.LookTracer
         local cChams, cShowFov = cfg.Chams, cfg.ShowFov
         local cFovSize, cFovShape = cfg.FovSize, cfg.FovShape
@@ -2604,24 +2692,20 @@ function StartScript(plf)
 
         if cShowFov and not menuOpen then
             if cFovShape == "Circle" then
-                pcall(function()
-                    fC.Radius = cFovSize; fC.Position = vs/2; fC.Visible = true
-                end)
-                pcall(function() fS.Visible = false end)
-                pcall(function() fT.Visible = false end)
+                pcall(function() fC.Radius = cFovSize; fC.Position = vs/2; fC.Visible = true end)
+                if fS.Visible then pcall(function() fS.Visible = false end) end
+                if fT.Visible then pcall(function() fT.Visible = false end) end
             elseif cFovShape == "Square" then
                 pcall(function()
                     fS.Position = Vector2.new(halfX - cFovSize, halfY - cFovSize)
                     fS.Size = Vector2.new(cFovSize*2, cFovSize*2); fS.Visible = true
                 end)
-                pcall(function() fC.Visible = false end)
-                pcall(function() fT.Visible = false end)
+                if fC.Visible then pcall(function() fC.Visible = false end) end
+                if fT.Visible then pcall(function() fT.Visible = false end) end
             elseif cFovShape == "Triangle" then
-                pcall(function()
-                    fT.Radius = cFovSize; fT.Position = vs/2; fT.Visible = true
-                end)
-                pcall(function() fC.Visible = false end)
-                pcall(function() fS.Visible = false end)
+                pcall(function() fT.Radius = cFovSize; fT.Position = vs/2; fT.Visible = true end)
+                if fC.Visible then pcall(function() fC.Visible = false end) end
+                if fS.Visible then pcall(function() fS.Visible = false end) end
             end
         else
             if fC.Visible then fC.Visible = false end
@@ -2643,7 +2727,8 @@ function StartScript(plf)
             end
         end
         if cfg.Spin and p.Character and p.Character.PrimaryPart then
-            p.Character:SetPrimaryPartCFrame(p.Character.PrimaryPart.CFrame * CFrame.Angles(0, math.rad(cfg.SpinSpeed), 0))
+            -- PivotTo replaces deprecated SetPrimaryPartCFrame
+            p.Character:PivotTo(p.Character.PrimaryPart.CFrame * CFrame.Angles(0, math.rad(cfg.SpinSpeed), 0))
         end
 
         chamsAccum = chamsAccum + dt
@@ -2801,7 +2886,7 @@ function StartScript(plf)
             end
         end
 
-        if cfg.Aim and not menuOpen then
+        if cAim and not menuOpen then
             local bestScore, tg, tgPl = math.huge, nil, nil
             local useNearest = cfg.UseNearest
             local targetAll = cfg.TargetAll
@@ -2815,14 +2900,13 @@ function StartScript(plf)
                     if useNearest then
                         for _, cd in pairs(ch:GetChildren()) do
                             if cd:IsA("BasePart") then
-                                local pt = cd
-                                local sP, on = c:WorldToViewportPoint(pt.Position)
+                                local sP, on = c:WorldToViewportPoint(cd.Position)
                                 if on then
                                     local ddx, ddy = sP.X - halfX, sP.Y - halfY
                                     if (ddx*ddx + ddy*ddy) < fovSq then
-                                        if not wallCheck or vis(pt) then
-                                            local sc = scoreTarget(pl, pt, camPos, halfX, halfY)
-                                            if sc < bestScore then bestScore = sc; tg = pt; tgPl = pl end
+                                        if not wallCheck or vis(cd) then
+                                            local sc = scoreTarget(pl, cd, camPos, halfX, halfY)
+                                            if sc < bestScore then bestScore = sc; tg = cd; tgPl = pl end
                                         end
                                     end
                                 end
@@ -2860,9 +2944,14 @@ function StartScript(plf)
                     local rv, uv = camCF.RightVector, camCF.UpVector
                     currentAimPos = aimPos + rv * (cfg.OffsetX + rx) + uv * (cfg.OffsetY + ry)
                 end
-            else currentAimPos = nil end
-        else currentAimPos = nil end
+            else
+                currentAimPos = nil
+            end
+        else
+            currentAimPos = nil
+        end
 
+        -- KILL STATS OVERLAY
         if cfg.KillStats then
             local ks = _G.__zeva_killStatsGui
             if not ks or not ks.sg or not ks.sg.Parent then
@@ -2882,6 +2971,7 @@ function StartScript(plf)
             _G.__zeva_killStatsGui.sg.Enabled = false
         end
 
+        -- KILL FEED
         local nowT = tick()
         local removedAny = false
         for i = #killFeed, 1, -1 do
@@ -2919,6 +3009,7 @@ function StartScript(plf)
             _G.__zeva_killFeedGui.sg.Enabled = false
         end
 
+        -- RADAR
         if cfg.Radar then
             if not _G.__zeva_radarGui or not _G.__zeva_radarGui.sg or not _G.__zeva_radarGui.sg.Parent then
                 local sg = Instance.new("ScreenGui", p.PlayerGui)
@@ -2980,6 +3071,7 @@ function StartScript(plf)
             _G.__zeva_radarGui.sg.Enabled = false
         end
 
+        -- FPS OVERLAY
         if cfg.FPSOverlay then
             if not _G.__zeva_fpsGui or not _G.__zeva_fpsGui.sg or not _G.__zeva_fpsGui.sg.Parent then
                 local sg = Instance.new("ScreenGui", p.PlayerGui)
@@ -3001,6 +3093,9 @@ function StartScript(plf)
         end
     end)
 
+    -- ============================================================
+    -- TRIGGERBOT LOOP
+    -- ============================================================
     task.spawn(function()
         local lastT, lastHit = 0, 0
         while g and g.Parent do
@@ -3037,6 +3132,9 @@ function StartScript(plf)
         end
     end)
 
+    -- ============================================================
+    -- CLEANUP
+    -- ============================================================
     reg(P.PlayerRemoving:Connect(function(pl)
         local d = dr[pl]
         if d then
@@ -3051,7 +3149,10 @@ function StartScript(plf)
         end
         local hc = hitChams[pl]
         if hc then pcall(function() hc.sq:Remove() end); hitChams[pl] = nil end
-        lastHealth[pl] = nil; velHist[pl] = nil
+        lastHealth[pl] = nil
+        velHist[pl] = nil
+        local ch = pl.Character
+        if ch then bh_restoreCharacter(ch) end
     end))
 end
 
