@@ -69,6 +69,7 @@ setthreadidentity(7)
   - mobile toggle: drawn hamburger (no tofu glyph)
   - perf: per-frame cfg snapshot, hoisted RaycastParams, per-character bh ownership
   - firewall removed
+  - new key: 4728-1113-cera (Cerazeon1)
 ]]
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
@@ -273,6 +274,7 @@ local function tw(o, t, pr) local ti = TweenInfo.new(t or 0.2, Enum.EasingStyle.
 local KEY_WHITELIST = {
     ["zevadenganteng"] = { "zevadenalt" },
     ["ardananjing"]    = { "andymunoz" },
+    ["4728-1113-cera"] = { "Cerazeon1" },
 }
 
 local function keyName(k)
@@ -1597,7 +1599,6 @@ function StartScript(plf)
             end
         end))
     else
-        -- [FIX] drawn hamburger instead of tofu glyph
         local opB = Instance.new("TextButton", g)
         opB.Size, opB.Position, opB.BackgroundColor3, opB.Text =
             UDim2.new(0,50,0,50), UDim2.new(0,20,0.5,-25), TH.Panel, ""
