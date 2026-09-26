@@ -1,7 +1,9 @@
 --[[
   Zeva v6.9.7
-  - Discord icon fixed: primary + alt asset, text fallback on 404
+  - Key whitelist: keys bound to allowed usernames
+  - Discord icon: primary + alt asset, text fallback on 404
   - KO/dead detection: 6-layer (health, state, platformstand, markers, attributes, ragdoll)
+  - Aimviewer: pauses visible aimlock while being spectated
   - all prior features preserved
 ]]
 local P   = game:GetService("Players")
@@ -238,7 +240,14 @@ local function round(o, r) local cc = Instance.new("UICorner"); cc.CornerRadius 
 local function stroke(o, col, th, tr) local s = Instance.new("UIStroke"); s.Color = col or TH.Line; s.Thickness = th or 1; s.Transparency = tr or 0; s.Parent = o; return s end
 local function tw(o, t, pr) local ti = TweenInfo.new(t or 0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out); local tn = TS:Create(o, ti, pr); tn:Play(); return tn end
 
-local VALID_KEY = "zevadenganteng"
+-- ============================================================
+-- KEY WHITELIST — key -> list of allowed usernames (lowercase compare)
+-- Empty list {} = anyone can use that key
+-- ============================================================
+local KEY_WHITELIST = {
+    ["zevadenganteng"] = { "zevadenalt" },
+    ["ardananjing"]    = { "andymunoz" },
+}
 
 local function keyName(k)
     if k == nil then return "None" end
@@ -473,23 +482,47 @@ function buildKeyScreen()
     kSubmit.MouseLeave:Connect(function() kSubmit.TextColor3 = TERM.Amber end)
 
     local function trySubmit()
-        if kBox.Text == VALID_KEY then
-            kErr.TextColor3 = TERM.Green
-            kErr.Text = "[ ok ] access granted"
-            s.Color = TERM.Green
-            task.wait(0.4)
-            kG:Destroy()
-            buildScanScreen(function()
-                StartScript(currentPlatform)
-            end)
-        else
+        local entered = kBox.Text
+        local allowed = KEY_WHITELIST[entered]
+
+        if allowed == nil then
             kErr.TextColor3 = TERM.Red
             kErr.Text = "[err ] invalid key"
             kBox.Text = ""
             s.Color = TERM.Red
             task.delay(0.35, function() pcall(function() s.Color = TERM.Line end) end)
             pcall(function() kBox:CaptureFocus() end)
+            return
         end
+
+        if #allowed > 0 then
+            local myName = string.lower(p.Name)
+            local ok = false
+            for _, allowedName in ipairs(allowed) do
+                if string.lower(allowedName) == myName then
+                    ok = true
+                    break
+                end
+            end
+            if not ok then
+                kErr.TextColor3 = TERM.Red
+                kErr.Text = "[err ] key bound to another user"
+                kBox.Text = ""
+                s.Color = TERM.Red
+                task.delay(0.5, function() pcall(function() s.Color = TERM.Line end) end)
+                pcall(function() kBox:CaptureFocus() end)
+                return
+            end
+        end
+
+        kErr.TextColor3 = TERM.Green
+        kErr.Text = "[ ok ] access granted — " .. p.Name
+        s.Color = TERM.Green
+        task.wait(0.4)
+        kG:Destroy()
+        buildScanScreen(function()
+            StartScript(currentPlatform)
+        end)
     end
 
     kSubmit.MouseButton1Click:Connect(trySubmit)
@@ -725,6 +758,7 @@ function StartScript(plf)
         MaxTriggerDist=500,
         HideKey=Enum.KeyCode.LeftBracket,
         AimKey=nil, AimKeyHeld=false, AimKeyToggled=false, AimToggleMode=false,
+        SpectateDetect=true, SpectateDelay=0.35,
         MenuSound=true, AccentColor=Color3.fromRGB(140,190,255),
         FovShape="Circle", AimPriority="Crosshair", SmoothCurve="Linear",
         Crosshair=false, CrosshairStyle="Cross", CrosshairSize=12, CrosshairGap=4,
@@ -1189,7 +1223,7 @@ function StartScript(plf)
     creditText.TextXAlignment = Enum.TextXAlignment.Left
 
     -- ============================================================
-    -- DISCORD BUTTON — fixed: primary + alt asset + text fallback
+    -- DISCORD BUTTON
     -- ============================================================
     local DISCORD_ASSET     = "rbxassetid://8602918103"
     local DISCORD_ASSET_ALT = "rbxassetid://6863772078"
@@ -1609,6 +1643,32 @@ function StartScript(plf)
         round(shBtn, 6); stroke(shBtn, TH.LineSoft, 1, 0.4); regAccent(shBtn, "TextColor3")
         shBtn.MouseButton1Click:Connect(function() shapeIdx = shapeIdx % #shapes + 1; cfg.FovShape = shapes[shapeIdx]; shBtn.Text = cfg.FovShape end)
         regFeature("FOV Shape", "Aim", shRow)
+
+        local s6 = section(pages["Aim"], "aimviewer")
+        toggle(s6, "Pause Aimlock On Spectate", "SpectateDetect", true, function(v)
+            cfg.SpectateDetect = v
+        end)
+        local svDelay = Instance.new("Frame", s6)
+        svDelay.Size, svDelay.BackgroundTransparency = UDim2.new(1,0,0,28), 1
+        local svL = Instance.new("TextLabel", svDelay)
+        svL.Size, svL.BackgroundTransparency, svL.Text, svL.TextColor3, svL.Font, svL.TextSize =
+            UDim2.new(0.6,0,1,0), 1, "Detector Poll", TH.Text, FONT, 12
+        svL.TextXAlignment = Enum.TextXAlignment.Left
+        local svB = Instance.new("TextButton", svDelay)
+        svB.Size, svB.Position, svB.BackgroundColor3, svB.Text, svB.TextColor3, svB.Font, svB.TextSize =
+            UDim2.new(0.4,-10,1,0), UDim2.new(0.6,0,0,0), TH.Panel2,
+            tostring(cfg.SpectateDelay) .. "s", TH.Accent, FONTB, 11
+        svB.AutoButtonColor, svB.BorderSizePixel = false, 0
+        round(svB, 6); stroke(svB, TH.LineSoft, 1, 0.4); regAccent(svB, "TextColor3")
+        local svOpts = {0.2, 0.35, 0.5, 0.75, 1.0}
+        local svIdx = 2
+        for i, vv in ipairs(svOpts) do if vv == cfg.SpectateDelay then svIdx = i end end
+        svB.MouseButton1Click:Connect(function()
+            svIdx = svIdx % #svOpts + 1
+            cfg.SpectateDelay = svOpts[svIdx]
+            svB.Text = tostring(cfg.SpectateDelay) .. "s"
+        end)
+        regFeature("Detector Poll", "Aim", svDelay)
     end
 
     do
@@ -2189,15 +2249,124 @@ function StartScript(plf)
     end
 
     local cachedPlayers = {}
+    local cachedPlayerList = {}
     local function refreshPlayerCache()
         local list = P:GetPlayers()
-        local new = {}
-        for i = 1, #list do new[list[i]] = true end
-        cachedPlayers = new
+        local dict, arr = {}, {}
+        for i = 1, #list do
+            local pl = list[i]
+            if pl ~= p then
+                dict[pl] = true
+                arr[#arr+1] = pl
+            end
+        end
+        cachedPlayers = dict
+        cachedPlayerList = arr
     end
     refreshPlayerCache()
     reg(P.PlayerAdded:Connect(function() task.wait(0.3); refreshPlayerCache() end))
     reg(P.PlayerRemoving:Connect(refreshPlayerCache))
+
+    -- ============================================================
+    -- AIMVIEWER — spectate detector
+    -- ============================================================
+    local spectator = { watching = false, who = nil, lastCheck = 0 }
+
+    local function detectSpectator()
+        for i = 1, #cachedPlayerList do
+            local pl = cachedPlayerList[i]
+
+            for _, attrName in ipairs({
+                "Spectating", "SpectateTarget", "Watching", "WatchingPlayer",
+                "IsSpectating", "ViewingPlayer",
+            }) do
+                local ok, val = pcall(function() return pl:GetAttribute(attrName) end)
+                if ok and val ~= nil then
+                    if val == p or val == p.Name or val == p.UserId
+                       or val == tostring(p.UserId) then
+                        return true, pl
+                    end
+                end
+            end
+
+            local ch = pl.Character
+            if ch then
+                local hum = ch:FindFirstChildOfClass("Humanoid")
+                if hum and hum.CameraSubject and p.Character then
+                    if hum.CameraSubject:IsDescendantOf(p.Character) then
+                        return true, pl
+                    end
+                end
+            end
+        end
+        return false, nil
+    end
+
+    task.spawn(function()
+        while g and g.Parent do
+            task.wait(cfg.SpectateDelay or 0.35)
+            if cfg.Aim and cfg.SpectateDetect then
+                local watching, who = detectSpectator()
+                spectator.watching = watching
+                spectator.who = who
+                spectator.lastCheck = tick()
+            else
+                spectator.watching = false
+                spectator.who = nil
+            end
+        end
+    end)
+
+    -- live status label updater
+    task.spawn(function()
+        while g and g.Parent do
+            task.wait(0.25)
+            local svStatus = g:FindFirstChild("svStatus", true)
+            if svStatus then
+                if cfg.Aim and cfg.SpectateDetect then
+                    if spectator.watching then
+                        svStatus.Text = "status: WATCHED by " .. (spectator.who and spectator.who.Name or "?")
+                        svStatus.TextColor3 = TH.Danger
+                    else
+                        svStatus.Text = "status: clear"
+                        svStatus.TextColor3 = TH.On
+                    end
+                else
+                    svStatus.Text = "status: off"
+                    svStatus.TextColor3 = TH.TextMute
+                end
+            end
+        end
+    end)
+
+    -- attach the live status label into the aimviewer section
+    do
+        local sectionHolder = pages["Aim"]:FindFirstChild("svStatusHolder")
+        if not sectionHolder then
+            local aimViewer = nil
+            for _, ch in ipairs(pages["Aim"]:GetDescendants()) do
+                if ch:IsA("TextLabel") and ch.Text == "AIMVIEWER" then
+                    aimViewer = ch.Parent.Parent
+                    break
+                end
+            end
+            if aimViewer then
+                local inner = aimViewer:FindFirstChild("svStatusHost")
+                if not inner then
+                    local svStatus = Instance.new("TextLabel", aimViewer)
+                    svStatus.Name = "svStatus"
+                    svStatus.Size, svStatus.BackgroundTransparency =
+                        UDim2.new(1,-32,0,20), 1
+                    svStatus.Position = UDim2.new(0,16,0,0)
+                    svStatus.Text = "status: idle"
+                    svStatus.TextColor3 = TH.TextMute
+                    svStatus.Font = FONT
+                    svStatus.TextSize = 11
+                    svStatus.TextXAlignment = Enum.TextXAlignment.Left
+                end
+            end
+        end
+    end
 
     local noclipParts = {}
     local function rebuildNoclipParts()
@@ -2368,6 +2537,12 @@ function StartScript(plf)
         if not cfg.Aim or not currentAimPos then return end
         if root.Visible then return end
         if isPC and cfg.AimKey ~= nil and cfg.AimKeyHeld == false then return end
+
+        -- AIMVIEWER: if a spectator is watching, freeze visible motion
+        if cfg.SpectateDetect and spectator.watching then
+            return
+        end
+
         if cfg.FreeCam and fcCFrame then
             fcCFrame = CFrame.new(fcCFrame.Position, currentAimPos)
         else
