@@ -1,11 +1,9 @@
 --[[
-  Zeva v6.9.7 — real AC scan + auto firewall build
-  - Real executor fingerprint (identifyexecutor + capability check)
-  - Real anti-cheat scan over DataModel services
-  - Auto-firewall: any RemoteEvent/RemoteFunction flagged by the scan
-    gets added to PROTECTED_REMOTES → FireServer/InvokeServer silently dropped
-  - Auto Bhop (ground-only), Magic Bullet, menu gate, all prior fixes preserved
---]]
+  Zeva v6.9.7
+  - Discord icon fixed: primary + alt asset, text fallback on 404
+  - KO/dead detection: 6-layer (health, state, platformstand, markers, attributes, ragdoll)
+  - all prior features preserved
+]]
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
 local TS  = game:GetService("TweenService")
@@ -22,7 +20,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local V3_HEAD = Vector3.new(0, 2.5, 0)
 local V3_FEET = Vector3.new(0, 3, 0)
-local V3_UP50 = Vector3.new(0, 50, 0)
 local V3_UP   = Vector3.yAxis
 local V3_ZERO = Vector3.zero
 local AIR     = Enum.Material.Air
@@ -62,9 +59,6 @@ end
 
 -- ============================================================
 -- FIREWALL
--- Shared protected set. Scan feeds into this at runtime.
--- Any RemoteEvent/RemoteFunction keyed here has its FireServer
--- and InvokeServer calls silently dropped.
 -- ============================================================
 local PROTECTED_REMOTES = {}
 local FIREWALL_ACTIVE = false
@@ -92,7 +86,6 @@ local function installFirewall()
     return ok
 end
 
--- preset known AC remote names
 for _, name in ipairs({"MobileAntiCheatRE", "aSKbG03ajK"}) do
     local r = ReplicatedStorage:FindFirstChild(name)
     if r and (r:IsA("RemoteEvent") or r:IsA("RemoteFunction")) then
@@ -131,8 +124,6 @@ end
 
 -- ============================================================
 -- REAL ANTI-CHEAT SCAN
--- Walks storage containers for remotes/scripts/folders whose names
--- match known AC patterns. Returns findings list, count, raw obj refs.
 -- ============================================================
 local function realAntiCheatScan()
     local findings = {}
@@ -192,7 +183,6 @@ local function realAntiCheatScan()
         end)
     end
 
-    -- local player attributes
     pcall(function()
         local ok, attrs = pcall(function() return p:GetAttributes() end)
         if ok and type(attrs) == "table" then
@@ -208,7 +198,6 @@ local function realAntiCheatScan()
         end
     end)
 
-    -- getgenv flags
     pcall(function()
         local env = (getgenv and getgenv()) or _G or {}
         for k in pairs(env) do
@@ -510,8 +499,7 @@ function buildKeyScreen()
 end
 
 -- ============================================================
--- SCAN ANIMATION — v6.9.7
--- Real fingerprint + real AC scan + auto-firewall
+-- SCAN ANIMATION
 -- ============================================================
 function buildScanScreen(onDone)
     local sG = Instance.new("ScreenGui", p.PlayerGui)
@@ -600,13 +588,9 @@ function buildScanScreen(onDone)
         return l
     end
 
-    -- ============================================
-    -- PRE-SCAN: real data
-    -- ============================================
     local execName, execCaps = fingerprintExecutor()
     local acFindings, acCount, acRaw = realAntiCheatScan()
 
-    -- auto-firewall: add every RemoteEvent/RemoteFunction finding
     local fwActive = installFirewall()
     local blockedCount = 0
     for _, obj in ipairs(acRaw or {}) do
@@ -641,9 +625,6 @@ function buildScanScreen(onDone)
         end
     end)
 
-    -- ============================================
-    -- STEPS
-    -- ============================================
     local steps = {
         { "[>] establishing secure tunnel ............ ok",           TERM.Amber, "handshake",    0.35 },
         { "[>] fingerprinting executor ............... " .. execName, TERM.Amber, "executor",     0.35 },
@@ -1206,15 +1187,63 @@ function StartScript(plf)
     creditText.Size, creditText.Position, creditText.BackgroundTransparency, creditText.Text, creditText.TextColor3, creditText.Font, creditText.TextSize =
         UDim2.new(0,200,1,0), UDim2.new(0,0,0,0), 1, "made by zevadenn", TH.TextMute, FONT, 10
     creditText.TextXAlignment = Enum.TextXAlignment.Left
+
+    -- ============================================================
+    -- DISCORD BUTTON — fixed: primary + alt asset + text fallback
+    -- ============================================================
+    local DISCORD_ASSET     = "rbxassetid://8602918103"
+    local DISCORD_ASSET_ALT = "rbxassetid://6863772078"
+
     local discordBtn = Instance.new("ImageButton", creditRow)
-    discordBtn.Size, discordBtn.Position, discordBtn.BackgroundColor3, discordBtn.BackgroundTransparency =
-        UDim2.new(0,24,0,24), UDim2.new(1,-26,0,0), TH.Panel, 0.3
-    discordBtn.Image = "rbxassetid://13444458315"; discordBtn.ScaleType = Enum.ScaleType.Fit
-    discordBtn.AutoButtonColor, discordBtn.BorderSizePixel = false, 0
+    discordBtn.Size, discordBtn.Position = UDim2.new(0,24,0,24), UDim2.new(1,-26,0,0)
+    discordBtn.BackgroundColor3, discordBtn.BackgroundTransparency = TH.Panel, 0.3
+    discordBtn.BorderSizePixel = 0
+    discordBtn.AutoButtonColor = false
+    discordBtn.ScaleType = Enum.ScaleType.Fit
+    discordBtn.ImageTransparency = 0
+    discordBtn.Image = DISCORD_ASSET
+    discordBtn.ImageColor3 = Color3.fromRGB(255,255,255)
     round(discordBtn, 6); stroke(discordBtn, TH.Discord, 1, 0.3)
-    discordBtn.MouseEnter:Connect(function() tw(discordBtn, 0.14, {BackgroundColor3=TH.Discord, BackgroundTransparency=0}) end)
-    discordBtn.MouseLeave:Connect(function() tw(discordBtn, 0.14, {BackgroundColor3=TH.Panel, BackgroundTransparency=0.3}) end)
-    discordBtn.MouseButton1Click:Connect(function() if setclipboard then setclipboard("https://discord.gg/nN9F6kFrmc") end end)
+
+    local discordFallback = Instance.new("TextLabel", discordBtn)
+    discordFallback.Name = "Fallback"
+    discordFallback.Size = UDim2.new(1,0,1,0)
+    discordFallback.BackgroundTransparency = 1
+    discordFallback.Font = FONTB
+    discordFallback.TextSize = 14
+    discordFallback.TextColor3 = TH.Discord
+    discordFallback.Text = "◈"
+    discordFallback.ZIndex = discordBtn.ZIndex + 1
+    discordFallback.Visible = false
+
+    local discordTriedAlt = false
+    discordBtn:GetPropertyChangedSignal("IsLoaded"):Connect(function()
+        if not discordBtn.IsLoaded then return end
+        local sz = discordBtn.ContentImageSize
+        if sz == Vector2.new(0,0) or sz == Vector2.new(1,1) then
+            if not discordTriedAlt then
+                discordTriedAlt = true
+                discordBtn.Image = DISCORD_ASSET_ALT
+            else
+                discordFallback.Visible = true
+                discordBtn.ImageTransparency = 1
+            end
+        else
+            discordFallback.Visible = false
+        end
+    end)
+
+    discordBtn.MouseEnter:Connect(function()
+        tw(discordBtn, 0.14, {BackgroundColor3=TH.Discord, BackgroundTransparency=0})
+        discordFallback.TextColor3 = Color3.fromRGB(255,255,255)
+    end)
+    discordBtn.MouseLeave:Connect(function()
+        tw(discordBtn, 0.14, {BackgroundColor3=TH.Panel, BackgroundTransparency=0.3})
+        discordFallback.TextColor3 = TH.Discord
+    end)
+    discordBtn.MouseButton1Click:Connect(function()
+        if setclipboard then setclipboard("https://discord.gg/nN9F6kFrmc") end
+    end)
 
     local function setTab(name)
         activeTab = name
@@ -2029,19 +2058,99 @@ function StartScript(plf)
         end)
     end)
 
+    -- ============================================================
+    -- KNOCK / DEAD DETECTION — 6-layer
+    -- ============================================================
+    local function isKOorDead(pl)
+        if not pl or pl == p then return true end
+        local ch = pl.Character
+        if not ch then return true end
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        if not hum then return true end
+        if hum.Health <= 0 then return true end
+        if hum.MaxHealth > 0 and (hum.Health / hum.MaxHealth) <= 0 then return true end
+
+        local okS, state = pcall(function() return hum:GetState() end)
+        if okS then
+            if state == Enum.HumanoidStateType.Dead then return true end
+            if state == Enum.HumanoidStateType.Physics then return true end
+        end
+
+        if hum.PlatformStand == true then return true end
+
+        local markerChecks = {
+            {"BodyEffects", "K.O"},
+            {"BodyEffects", "KO"},
+            {"BodyEffects", "Knocked"},
+            {"BodyEffects", "Downed"},
+            {"BodyEffects", "Dead"},
+            {"BodyEffects", "Ragdoll"},
+            {"Knock", nil},
+            {"Knockout", nil},
+            {"Downed", nil},
+            {"Ragdoll", nil},
+            {"KO", nil},
+            {"K.O", nil},
+        }
+        for _, entry in ipairs(markerChecks) do
+            local container = ch:FindFirstChild(entry[1])
+            if container then
+                if entry[2] == nil then
+                    if container:IsA("BoolValue") and container.Value then return true end
+                    if container:IsA("NumberValue") and container.Value > 0 then return true end
+                    if container:IsA("StringValue") and container.Value ~= "" then return true end
+                else
+                    local flag = container:FindFirstChild(entry[2])
+                    if flag then
+                        if flag:IsA("BoolValue") and flag.Value then return true end
+                        if flag:IsA("NumberValue") and flag.Value > 0 then return true end
+                        if flag:IsA("StringValue") and flag.Value ~= "" then return true end
+                    end
+                end
+            end
+        end
+
+        for _, attrName in ipairs({
+            "K.O", "KO", "Knocked", "IsKnocked", "Downed", "IsDowned",
+            "Dead", "IsDead", "Alive", "Ragdolled", "IsRagdolled",
+        }) do
+            local okC, val = pcall(function() return ch:GetAttribute(attrName) end)
+            if okC and val ~= nil then
+                if attrName == "Alive" then
+                    if val == false then return true end
+                else
+                    if val == true or val == "true" then return true end
+                end
+            end
+            local okP, val2 = pcall(function() return pl:GetAttribute(attrName) end)
+            if okP and val2 ~= nil then
+                if attrName == "Alive" then
+                    if val2 == false then return true end
+                else
+                    if val2 == true or val2 == "true" then return true end
+                end
+            end
+        end
+
+        local hrp = ch:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local ragdollFolder = hrp:FindFirstChild("RagdollConstraints")
+            if ragdollFolder and #ragdollFolder:GetChildren() > 0 then return true end
+        end
+
+        return false
+    end
+
     local function v(pl)
         if not pl or pl == p then return false end
         if cfg.TeamCheck and pl.Team ~= nil and pl.Team == p.Team then return false end
-        local ch = pl.Character
-        if not ch then return false end
-        local hum = ch:FindFirstChild("Humanoid")
-        if not hum or hum.Health <= 0 then return false end
         if cfg.KOCheck then
-            local be = ch:FindFirstChild("BodyEffects")
-            if be then
-                local ko = be:FindFirstChild("K.O")
-                if ko and ko.Value then return false end
-            end
+            if isKOorDead(pl) then return false end
+        else
+            local ch = pl.Character
+            if not ch then return false end
+            local hum = ch:FindFirstChildOfClass("Humanoid")
+            if not hum or hum.Health <= 0 then return false end
         end
         return true
     end
@@ -2051,17 +2160,11 @@ function StartScript(plf)
         if pl.Team and p.Team and pl.Team == p.Team then return false end
         if pl:GetAttribute("Team") and p:GetAttribute("Team")
            and pl:GetAttribute("Team") == p:GetAttribute("Team") then return false end
+        if cfg.KOCheck and isKOorDead(pl) then return false end
         local ch = pl.Character
         if not ch then return false end
-        local hum = ch:FindFirstChild("Humanoid")
+        local hum = ch:FindFirstChildOfClass("Humanoid")
         if not hum or hum.Health <= 0 then return false end
-        if cfg.KOCheck then
-            local be = ch:FindFirstChild("BodyEffects")
-            if be then
-                local ko = be:FindFirstChild("K.O")
-                if ko and ko.Value then return false end
-            end
-        end
         return true
     end
 
