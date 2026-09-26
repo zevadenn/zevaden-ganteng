@@ -68,6 +68,7 @@ setthreadidentity(7)
   - all prior features preserved
   - mobile toggle: drawn hamburger (no tofu glyph)
   - perf: per-frame cfg snapshot, hoisted RaycastParams, per-character bh ownership
+  - firewall removed
 ]]
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
@@ -121,43 +122,6 @@ if not CAP.Drawing then
     end
     return
 end
-
--- ============================================================
--- FIREWALL
--- ============================================================
-local PROTECTED_REMOTES = {}
-local FIREWALL_ACTIVE = false
-
-local function installFirewall()
-    if FIREWALL_ACTIVE then return true end
-    if not (getrawmetatable and setreadonly and newcclosure and getnamecallmethod) then
-        return false
-    end
-    local mt = getrawmetatable(game)
-    if not mt then return false end
-    local ok = pcall(function()
-        local oldNamecall = mt.__namecall
-        setreadonly(mt, false)
-        mt.__namecall = newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            if method == "FireServer" or method == "InvokeServer" then
-                if PROTECTED_REMOTES[self] then return nil end
-            end
-            return oldNamecall(self, ...)
-        end)
-        setreadonly(mt, true)
-    end)
-    FIREWALL_ACTIVE = ok
-    return ok
-end
-
-for _, name in ipairs({"MobileAntiCheatRE", "aSKbG03ajK"}) do
-    local r = ReplicatedStorage:FindFirstChild(name)
-    if r and (r:IsA("RemoteEvent") or r:IsA("RemoteFunction")) then
-        PROTECTED_REMOTES[r] = true
-    end
-end
-installFirewall()
 
 -- ============================================================
 -- EXECUTOR FINGERPRINT
@@ -687,24 +651,12 @@ function buildScanScreen(onDone)
     local execName, execCaps = fingerprintExecutor()
     local acFindings, acCount, acRaw = realAntiCheatScan()
 
-    local fwActive = installFirewall()
-    local blockedCount = 0
-    for _, obj in ipairs(acRaw or {}) do
-        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-            PROTECTED_REMOTES[obj] = true
-            blockedCount = blockedCount + 1
-        end
-    end
-
     local acStatusText, acStatusColor
     if acCount == 0 then
         acStatusText = "clean"
         acStatusColor = TERM.Green
-    elseif fwActive then
-        acStatusText = tostring(blockedCount) .. " blocked"
-        acStatusColor = TERM.Green
     else
-        acStatusText = tostring(acCount) .. " found — firewall offline"
+        acStatusText = tostring(acCount) .. " found"
         acStatusColor = TERM.Red
     end
 
@@ -745,16 +697,10 @@ function buildScanScreen(onDone)
             local isRemote = (f.class == "RemoteEvent" or f.class == "RemoteFunction")
             local tag = isRemote and "[×] " or "[!] "
             local col = isRemote and TERM.Red or TERM.Dim
-            table.insert(steps, { tag .. label, col, "firewall", 0.22 })
+            table.insert(steps, { tag .. label, col, "scan", 0.22 })
         end
         if acCount > shown then
-            table.insert(steps, { "[×]   + " .. tostring(acCount - shown) .. " more", TERM.Dim, "firewall", 0.2 })
-        end
-        if blockedCount > 0 and fwActive then
-            table.insert(steps, {
-                "[>] blocking " .. tostring(blockedCount) .. " remote" .. (blockedCount == 1 and "" or "s") .. " .......... ok",
-                TERM.Green, "firewall", 0.35
-            })
+            table.insert(steps, { "[×]   + " .. tostring(acCount - shown) .. " more", TERM.Dim, "scan", 0.2 })
         end
     end
 
@@ -1250,7 +1196,6 @@ function StartScript(plf)
     subText.TextXAlignment = Enum.TextXAlignment.Left
     subText.Visible = isPC
 
-    -- [FIX] no tofu glyph
     local hintText = Instance.new("TextLabel", title)
     hintText.Size, hintText.Position, hintText.BackgroundTransparency, hintText.Text, hintText.TextColor3, hintText.Font, hintText.TextSize =
         UDim2.new(0,130,1,0), UDim2.new(1,-320,0,0), 1,
@@ -2066,7 +2011,6 @@ function StartScript(plf)
             end, false)
             toggle(s3, "Aim Key: Toggle Mode", "AimToggleMode", false, function(v) cfg.AimToggleMode = v end)
         else
-            -- [FIX] no tofu
             local note = Instance.new("TextLabel", s3)
             note.Size, note.BackgroundTransparency, note.Text, note.TextColor3, note.Font, note.TextSize =
                 UDim2.new(1,0,0,24), 1, "No keybinds on mobile — tap the menu button to toggle", TH.TextMute, FONT, 11
