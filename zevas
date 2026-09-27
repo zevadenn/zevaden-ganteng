@@ -405,8 +405,8 @@ function buildSelector()
         return l
     end
 
-    line("ZEVA TERMINAL v6.9", TERM.Hi, 14, 0)
-    line("DC:zevadenn / TT ntosz", TERM.Dim, 11, 18)
+    line("CHEAT TERMINAL", TERM.Hi, 14, 0)
+    line(" ", TERM.Dim, 11, 18)
     line("> mount /dev/zeva .......... ok", TERM.Amber, 12, 42)
     line("> loading auth daemon ...... ok", TERM.Amber, 12, 58)
     line("select target platform:", TERM.Hi, 13, 86)
