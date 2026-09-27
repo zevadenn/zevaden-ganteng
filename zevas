@@ -273,7 +273,7 @@ local function tw(o, t, pr) local ti = TweenInfo.new(t or 0.2, Enum.EasingStyle.
 local KEY_WHITELIST = {
     ["zevadenganteng"] = { "zevadenalt" },
     ["ardananjing"]    = { "andymunoz" },
-    ["4728-1113-cera"] = { "Cerazeon1" },
+    ["48-3-cera"] = {" "},
 }
 
 local function keyName(k)
