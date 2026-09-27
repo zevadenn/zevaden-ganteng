@@ -60,16 +60,12 @@ end))
 setthreadidentity(7)
 
 --[[
-  Zeva v6.9.8
-  - Key whitelist: keys bound to allowed usernames
-  - Discord icon: primary + alt asset, text fallback on 404
-  - KO/dead detection: 6-layer (health, state, platformstand, markers, attributes, ragdoll)
-  - Aimviewer: pauses visible aimlock while being spectated
+  Zeva v6.9.9
+  - smoother aim: framerate-independent exponential smoothing
+  - accurate FOV: shape-aware targeting, Z-gated (no behind-camera ghosts)
+  - better prediction: ping + acceleration aware lead
+  - sub-pixel snap guard to stop end-of-lerp jitter
   - all prior features preserved
-  - mobile toggle: drawn hamburger (no tofu glyph)
-  - perf: per-frame cfg snapshot, hoisted RaycastParams, per-character bh ownership
-  - firewall removed
-  - new key: 4728-1113-cera (Cerazeon1)
 ]]
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
@@ -383,10 +379,10 @@ end
 function buildSelector()
     clearSelectors()
     local chG = Instance.new("ScreenGui", p.PlayerGui)
-    chG.Name = "titit_sel_" .. tostring(math.random(1e6, 9e6))
+    chG.Name = "zeva_sel_" .. tostring(math.random(1e6, 9e6))
     chG.ResetOnSpawn = false; chG.IgnoreGuiInset = true; chG.DisplayOrder = 100
 
-    local outer, body, s = termWindow(chG, "/dev/injector --boot", 420, 240)
+    local outer, body, s = termWindow(chG, "/dev/zeva --boot", 420, 240)
 
     local pad = Instance.new("UIPadding", body)
     pad.PaddingLeft = UDim.new(0, 16); pad.PaddingRight = UDim.new(0, 16)
@@ -405,8 +401,8 @@ function buildSelector()
         return l
     end
 
-    line("VIP TERMINAL", TERM.Hi, 14, 0)
-    line(" ", TERM.Dim, 11, 18)
+    line("ZEVA TERMINAL v6.9", TERM.Hi, 14, 0)
+    line("DC:zevadenn / TT ntosz", TERM.Dim, 11, 18)
     line("> mount /dev/zeva .......... ok", TERM.Amber, 12, 42)
     line("> loading auth daemon ...... ok", TERM.Amber, 12, 58)
     line("select target platform:", TERM.Hi, 13, 86)
@@ -443,7 +439,7 @@ function buildKeyScreen()
     kG.Name = "zeva_key_" .. tostring(math.random(1e6, 9e6))
     kG.ResetOnSpawn = false; kG.IgnoreGuiInset = true; kG.DisplayOrder = 100
 
-    local outer, body, s = termWindow(kG, "/dev/zyz --auth", 420, 220)
+    local outer, body, s = termWindow(kG, "/dev/zeva --auth", 420, 220)
 
     local pad = Instance.new("UIPadding", body)
     pad.PaddingLeft = UDim.new(0, 16); pad.PaddingRight = UDim.new(0, 16)
@@ -866,7 +862,7 @@ function StartScript(plf)
     -- MAGIC BULLET (BIG HEAD) — per-character ownership
     -- ============================================================
     local bhCache = {}
-    local bhCharSet = {}   -- [character] = {parts...}
+    local bhCharSet = {}
     local BH_NAMES = { Head = true, Hitbox = true, ["Head Hitbox"] = true }
     local function bh_isTarget(part)
         return part:IsA("BasePart") and BH_NAMES[part.Name] == true
@@ -1147,11 +1143,45 @@ function StartScript(plf)
         end
     end
 
+    -- ============================================================
+    -- SMOOTHING + FOV HELPERS (v6.9.9)
+    -- ============================================================
     local function curveAlpha(t)
         t = math.clamp(t, 0, 1)
         if cfg.SmoothCurve == "Exponential" then return t * t
         elseif cfg.SmoothCurve == "Bezier" then return t < 0.5 and (4*t*t*t) or (1 - ((-2*t+2)^3)/2) end
         return t
+    end
+
+    -- shape-aware FOV test, matches drawn FOV exactly
+    local function inFovShape(dx, dy, r, shape)
+        if shape == "Square" then
+            return math.abs(dx) <= r and math.abs(dy) <= r
+        elseif shape == "Triangle" then
+            local v0x, v0y = 0, -r
+            local v1x, v1y = r * 0.86602540378, r * 0.5
+            local v2x, v2y = -r * 0.86602540378, r * 0.5
+            local function crs(ax, ay, bx, by) return ax * by - ay * bx end
+            local d1 = crs(v1x - v0x, v1y - v0y, dx - v0x, dy - v0y)
+            local d2 = crs(v2x - v1x, v2y - v1y, dx - v1x, dy - v1y)
+            local d3 = crs(v0x - v2x, v0y - v2y, dx - v2x, dy - v2y)
+            local hasNeg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+            local hasPos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+            return not (hasNeg and hasPos)
+        end
+        return dx * dx + dy * dy <= r * r
+    end
+
+    -- framerate-independent exponential smoothing
+    local function smoothAlpha(smth, dt, curve)
+        if smth <= 0.01 then return 1 end
+        local baseTau = smth * 0.4
+        if curve == "Exponential" then
+            return 1 - math.exp(-dt / (baseTau * 0.55))
+        elseif curve == "Bezier" then
+            return 1 - math.exp(-dt / (baseTau * 1.4))
+        end
+        return 1 - math.exp(-dt / baseTau)
     end
 
     local ESP_PRESETS = {
@@ -1194,7 +1224,7 @@ function StartScript(plf)
     titleText.TextXAlignment = Enum.TextXAlignment.Left
     local subText = Instance.new("TextLabel", title)
     subText.Size, subText.Position, subText.BackgroundTransparency, subText.Text, subText.TextColor3, subText.Font, subText.TextSize =
-        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9.8", TH.TextMute, FONT, 11
+        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9.9", TH.TextMute, FONT, 11
     subText.TextXAlignment = Enum.TextXAlignment.Left
     subText.Visible = isPC
 
@@ -1577,7 +1607,6 @@ function StartScript(plf)
         return sw
     end
 
-    -- window drag
     do
         local dragging, ds, sp
         title.InputBegan:Connect(function(i) if i.UserInputType == UIT_M1 or i.UserInputType == UIT_TCH then dragging = true; ds = i.Position; sp = root.Position end end)
@@ -1976,6 +2005,8 @@ function StartScript(plf)
             cfg.TargetList = {}
             cfg.BigHead=false; cfg.BigHeadSizeNum=20
             cfg.AutoBhop=false
+            cfg.Smth=0.35; cfg.Pred=0.12; cfg.PredScale=1.0
+            cfg.FovShape="Circle"; cfg.AimPriority="Crosshair"; cfg.SmoothCurve="Linear"
             BH_restoreAll()
             applyAccent(cfg.AccentColor)
             if hintText and plf == "PC" then
@@ -2302,7 +2333,6 @@ function StartScript(plf)
         return true
     end
 
-    -- hoisted RaycastParams for vis
     local visRayParams = RaycastParams.new()
     visRayParams.FilterType = Enum.RaycastFilterType.Blacklist
     local function vis(pt)
@@ -2326,6 +2356,11 @@ function StartScript(plf)
     local function getAvgVel(pl)
         local h = velHist[pl]; if not h then return V3_ZERO end
         return (h[1]+h[2]+h[3]) / 3
+    end
+    local function getAvgAccel(pl)
+        local h = velHist[pl]
+        if not h then return V3_ZERO end
+        return (h[3] - h[1]) * 0.5
     end
 
     local cachedPlayers = {}
@@ -2407,7 +2442,6 @@ function StartScript(plf)
         end
     end)
 
-    -- attach live status label into aimviewer section
     do
         local aimViewer = nil
         for _, ch in ipairs(pages["Aim"]:GetDescendants()) do
@@ -2480,12 +2514,25 @@ function StartScript(plf)
     }
     local bPsCount = #bPs
 
+    -- ============================================================
+    -- PREDICTION (v6.9.9) — ping + accel aware
+    -- ============================================================
     local function CalcPred(pl, tgt)
         if not tgt then return nil end
-        local vel = getAvgVel(pl); local pos = tgt.Position
-        if not cfg.AutoPred then return pos + vel * cfg.Pred end
+        local vel = getAvgVel(pl)
+        local pos = tgt.Position
+        if not cfg.AutoPred then
+            return pos + vel * cfg.Pred
+        end
+        local pingSec = 0
+        pcall(function()
+            local it = Stats.Network.ServerStatsItem["Data Ping"]
+            if it then pingSec = it:GetValue() * 0.001 end
+        end)
+        local accel = getAvgAccel(pl)
         local dist = (pos - c.CFrame.Position).Magnitude
-        return pos + vel * ((dist / 500) * cfg.PredScale)
+        local leadTime = cfg.Pred * cfg.PredScale + pingSec * 0.5 + math.min(dist / 2000, 0.15)
+        return pos + vel * leadTime + 0.5 * accel * leadTime * leadTime
     end
 
     local function pushCham(pl)
@@ -2559,23 +2606,29 @@ function StartScript(plf)
     end
     buildCrosshair()
 
+    -- Z-gated score target — no behind-camera ghosts
     local function scoreTarget(pl, part, camPos, scx, scy)
-        if cfg.AimPriority == "Closest" then return (part.Position - camPos).Magnitude end
+        if cfg.AimPriority == "Closest" then
+            return (part.Position - camPos).Magnitude
+        end
         if cfg.AimPriority == "LowestHP" then
             local hum = pl.Character and pl.Character:FindFirstChildOfClass("Humanoid")
             return hum and hum.Health or math.huge
         end
         local sp = c:WorldToViewportPoint(part.Position)
+        if sp.Z <= 0 then return math.huge end
+        local dx, dy = sp.X - scx, sp.Y - scy
+        local d2 = dx * dx + dy * dy
         if cfg.AimPriority == "Visible" then
-            return (vis(part) and 0 or 100000) + math.sqrt((sp.X-scx)^2 + (sp.Y-scy)^2)
+            return (vis(part) and 0 or 100000) + math.sqrt(d2)
         end
-        return math.sqrt((sp.X-scx)^2 + (sp.Y-scy)^2)
+        return math.sqrt(d2)
     end
 
     local function pushKillFeed(pl) table.insert(killFeed, {name = pl.DisplayName, born = tick()}) end
 
     -- ============================================================
-    -- MAGIC BULLET LOOP — per-character ownership, no redundant walk
+    -- MAGIC BULLET LOOP
     -- ============================================================
     reg(RS.Stepped:Connect(function()
         if not cfg.BigHead then
@@ -2588,7 +2641,6 @@ function StartScript(plf)
                 if ch then
                     local set = bhCharSet[ch]
                     if set then
-                        -- already expanded: just refresh size/collide on owned parts
                         local n = cfg.BigHeadSizeNum or 20
                         local target = Vector3.new(n, n, n)
                         for i = 1, #set do
@@ -2604,7 +2656,6 @@ function StartScript(plf)
                             end
                         end
                     else
-                        -- first time seeing this character: walk it once
                         local newSet = {}
                         for _, d in ipairs(ch:GetDescendants()) do
                             if bh_isTarget(d) then
@@ -2617,7 +2668,6 @@ function StartScript(plf)
                 end
             end
         end
-        -- restore characters that are no longer valid / destroyed
         for char in pairs(bhCharSet) do
             local pl = P:GetPlayerFromCharacter(char)
             if not char.Parent or not pl or not bh_valid(pl) then
@@ -2628,7 +2678,16 @@ function StartScript(plf)
 
     local currentAimPos = nil
 
+    -- ============================================================
+    -- AIM CAMERA BIND (v6.9.9) — framerate-independent
+    -- ============================================================
+    local lastAimTick = tick()
+
     reg(RS:BindToRenderStep(bindName, 200, function()
+        local nowTick = tick()
+        local dt = math.clamp(nowTick - lastAimTick, 0, 0.1)
+        lastAimTick = nowTick
+
         if not cfg.Aim or not currentAimPos then return end
         if root.Visible then return end
         if isPC and cfg.AimKey ~= nil and cfg.AimKeyHeld == false then return end
@@ -2636,9 +2695,22 @@ function StartScript(plf)
 
         if cfg.FreeCam and fcCFrame then
             fcCFrame = CFrame.new(fcCFrame.Position, currentAimPos)
-        else
-            c.CFrame = c.CFrame:Lerp(CFrame.new(c.CFrame.Position, currentAimPos), curveAlpha(cfg.Smth))
+            return
         end
+
+        local alpha = smoothAlpha(cfg.Smth, dt, cfg.SmoothCurve)
+
+        local camPos = c.CFrame.Position
+        local dx = currentAimPos.X - camPos.X
+        local dy = currentAimPos.Y - camPos.Y
+        local dz = currentAimPos.Z - camPos.Z
+        local distSq = dx*dx + dy*dy + dz*dz
+        if distSq < 0.0004 then
+            c.CFrame = CFrame.new(camPos, currentAimPos)
+            return
+        end
+
+        c.CFrame = c.CFrame:Lerp(CFrame.new(camPos, currentAimPos), alpha)
     end))
 
     -- ============================================================
@@ -2657,7 +2729,6 @@ function StartScript(plf)
         local camPos = camCF.Position
         local menuOpen = root.Visible
 
-        -- per-frame cfg snapshot (one hash lookup set instead of dozens)
         local cAim, cBox, cBone, cHealth, cDist = cfg.Aim, cfg.Box, cfg.Bone, cfg.Health, cfg.Dist
         local cTracer, cLookTr = cfg.Tracer, cfg.LookTracer
         local cChams, cShowFov = cfg.Chams, cfg.ShowFov
@@ -2733,7 +2804,6 @@ function StartScript(plf)
             end
         end
         if cfg.Spin and p.Character and p.Character.PrimaryPart then
-            -- PivotTo replaces deprecated SetPrimaryPartCFrame
             p.Character:PivotTo(p.Character.PrimaryPart.CFrame * CFrame.Angles(0, math.rad(cfg.SpinSpeed), 0))
         end
 
@@ -2892,6 +2962,9 @@ function StartScript(plf)
             end
         end
 
+        -- ============================================================
+        -- AIM SELECTION (v6.9.9) — shape-aware FOV + Z-gate
+        -- ============================================================
         if cAim and not menuOpen then
             local bestScore, tg, tgPl = math.huge, nil, nil
             local useNearest = cfg.UseNearest
@@ -2899,7 +2972,14 @@ function StartScript(plf)
             local wallCheck = cfg.WallCheck
             local targetList = cfg.TargetList
             local selectedParts = cfg.SelectedParts
-            local fovSq = cFovSize * cFovSize
+            local fovShape = cFovShape
+
+            local function fovOk(sx, sy, sZ)
+                if sZ <= 0 then return false end
+                local ddx, ddy = sx - halfX, sy - halfY
+                return inFovShape(ddx, ddy, cFovSize, fovShape)
+            end
+
             for pl in pairs(cachedPlayers) do
                 if v(pl) and (targetAll or targetList[pl.Name]) then
                     local ch = pl.Character
@@ -2907,13 +2987,10 @@ function StartScript(plf)
                         for _, cd in pairs(ch:GetChildren()) do
                             if cd:IsA("BasePart") then
                                 local sP, on = c:WorldToViewportPoint(cd.Position)
-                                if on then
-                                    local ddx, ddy = sP.X - halfX, sP.Y - halfY
-                                    if (ddx*ddx + ddy*ddy) < fovSq then
-                                        if not wallCheck or vis(cd) then
-                                            local sc = scoreTarget(pl, cd, camPos, halfX, halfY)
-                                            if sc < bestScore then bestScore = sc; tg = cd; tgPl = pl end
-                                        end
+                                if on and fovOk(sP.X, sP.Y, sP.Z) then
+                                    if not wallCheck or vis(cd) then
+                                        local sc = scoreTarget(pl, cd, camPos, halfX, halfY)
+                                        if sc < bestScore then bestScore = sc; tg = cd; tgPl = pl end
                                     end
                                 end
                             end
@@ -2924,13 +3001,10 @@ function StartScript(plf)
                                 local pt = ch:FindFirstChild(pN)
                                 if pt then
                                     local sP, on = c:WorldToViewportPoint(pt.Position)
-                                    if on then
-                                        local ddx, ddy = sP.X - halfX, sP.Y - halfY
-                                        if (ddx*ddx + ddy*ddy) < fovSq then
-                                            if not wallCheck or vis(pt) then
-                                                local sc = scoreTarget(pl, pt, camPos, halfX, halfY)
-                                                if sc < bestScore then bestScore = sc; tg = pt; tgPl = pl end
-                                            end
+                                    if on and fovOk(sP.X, sP.Y, sP.Z) then
+                                        if not wallCheck or vis(pt) then
+                                            local sc = scoreTarget(pl, pt, camPos, halfX, halfY)
+                                            if sc < bestScore then bestScore = sc; tg = pt; tgPl = pl end
                                         end
                                     end
                                 end
@@ -2939,6 +3013,7 @@ function StartScript(plf)
                     end
                 end
             end
+
             if tg and tgPl then
                 local aimPos = CalcPred(tgPl, tg)
                 if aimPos then
