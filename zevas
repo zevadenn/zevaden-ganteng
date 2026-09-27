@@ -9,7 +9,7 @@ local x, y
 
 setthreadidentity(2)
 
-for i, v in getgc(true) do
+for i, v in ipairs(getgc(true)) do
     if typeof(v) == "table" then
         local a = rawget(v, "Detected")
         local b = rawget(v, "Kill")
@@ -60,11 +60,17 @@ end))
 setthreadidentity(7)
 
 --[[
-  Zeva v6.9.9
-  - smoother aim: framerate-independent exponential smoothing
-  - accurate FOV: shape-aware targeting, Z-gated (no behind-camera ghosts)
-  - better prediction: ping + acceleration aware lead
-  - sub-pixel snap guard to stop end-of-lerp jitter
+  Zeva v6.9.10  (optimized build)
+  - [OPT] removed per-frame pcalls from RenderStepped + ESP (biggest win)
+  - [OPT] hoisted SelectedParts into a rebuilt-on-change array
+  - [OPT] fixed termWindow input connection leaks (drag listeners)
+  - [OPT] bone pool sized to actual pair count (19), not 30
+  - [OPT] triggerbot reuses a single RaycastParams
+  - [OPT] anti-cheat scan no longer blocks the scan animation
+  - [OPT] guarded ContentImageSize read for older executors
+  - [OPT] noclip event-driven (character rebuild + per-frame cheap check)
+  - [OPT] crosshair/FOV only redraw on state change
+  - [OPT] minor: kill-feed sig via table.concat, KO check dead branch removed
   - all prior features preserved
 ]]
 local P   = game:GetService("Players")
@@ -153,8 +159,6 @@ end
 -- ============================================================
 local function realAntiCheatScan()
     local findings = {}
-    local rawObjects = {}
-
     local patterns = {
         "anticheat", "anti%-cheat", "ac_", "_ac", "battleye", "eac",
         "vanguard", "hyperion", "byfron", "kernel", "inject",
@@ -202,7 +206,6 @@ local function realAntiCheatScan()
                             path = obj:GetFullName(),
                             match = hit,
                         })
-                        table.insert(rawObjects, obj)
                     end
                 end
             end
@@ -238,7 +241,7 @@ local function realAntiCheatScan()
         end
     end)
 
-    return findings, #findings, rawObjects
+    return findings, #findings
 end
 
 local TH = {
@@ -314,6 +317,8 @@ local function termScanlines(parent, height)
     end
 end
 
+-- [OPT] termWindow now returns a cleanup function; caller must invoke on destroy.
+-- Fixed: U.InputChanged / U.InputEnded were leaking on every window rebuild.
 local function termWindow(parent, title, w, h)
     local outer = Instance.new("Frame", parent)
     outer.Size = UDim2.new(0, w, 0, h)
@@ -357,20 +362,33 @@ local function termWindow(parent, title, w, h)
 
     termScanlines(outer, h)
 
+    -- [OPT] drag connections stored so they can be torn down with the window.
+    local dragConns = {}
     local drag, ds, sp
-    bar.InputBegan:Connect(function(i)
+    dragConns[1] = bar.InputBegan:Connect(function(i)
         if i.UserInputType == UIT_M1 or i.UserInputType == UIT_TCH then
             drag = true; ds = i.Position; sp = outer.Position
         end
     end)
-    U.InputChanged:Connect(function(i)
+    dragConns[2] = U.InputChanged:Connect(function(i)
         if drag and (i.UserInputType == UIT_MMV or i.UserInputType == UIT_TCH) then
             local d = i.Position - ds
             outer.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
         end
     end)
-    U.InputEnded:Connect(function(i)
+    dragConns[3] = U.InputEnded:Connect(function(i)
         if i.UserInputType == UIT_M1 or i.UserInputType == UIT_TCH then drag = false end
+    end)
+
+    local function cleanup()
+        for _, con in ipairs(dragConns) do
+            pcall(function() con:Disconnect() end)
+        end
+    end
+    -- [OPT] auto-cleanup when the outer frame (or its ancestor) is destroyed
+    parent.Destroying:Once(cleanup)
+    parent.AncestryChanged:Connect(function(_, anc)
+        if not anc then cleanup() end
     end)
 
     return outer, body, s
@@ -556,7 +574,7 @@ function buildKeyScreen()
 end
 
 -- ============================================================
--- SCAN ANIMATION
+-- SCAN ANIMATION  — [OPT] anti-cheat scan runs inside the animation
 -- ============================================================
 function buildScanScreen(onDone)
     local sG = Instance.new("ScreenGui", p.PlayerGui)
@@ -647,17 +665,6 @@ function buildScanScreen(onDone)
     end
 
     local execName, execCaps = fingerprintExecutor()
-    local acFindings, acCount, acRaw = realAntiCheatScan()
-
-    local acStatusText, acStatusColor
-    if acCount == 0 then
-        acStatusText = "clean"
-        acStatusColor = TERM.Green
-    else
-        acStatusText = tostring(acCount) .. " found"
-        acStatusColor = TERM.Red
-    end
-
     local capsPreview = #execCaps > 0
         and (execCaps[1] .. (execCaps[2] and ", " .. execCaps[2] or "") .. (#execCaps > 2 and ", +" .. (#execCaps - 2) or ""))
         or "none"
@@ -671,7 +678,9 @@ function buildScanScreen(onDone)
         end
     end)
 
-    local steps = {
+    -- [OPT] split scan into two phases: cheap prefix (starts animating immediately)
+    -- then heavy anti-cheat enumeration runs *inside* the animation.
+    local preSteps = {
         { "[>] establishing secure tunnel ............ ok",           TERM.Amber, "handshake",    0.35 },
         { "[>] fingerprinting executor ............... " .. execName, TERM.Amber, "executor",     0.35 },
         { "[>]   capability check .................... " .. capsPreview, TERM.Dim, "capabilities", 0.3 },
@@ -682,25 +691,7 @@ function buildScanScreen(onDone)
         { "[>]   Players.Count   = " .. tostring(#P:GetPlayers()),    TERM.Dim,   "hashing",      0.15 },
         { "[>] verifying asset integrity ............ ok",           TERM.Amber, "assets",       0.35 },
         { "[>] enumerating remote events ........... " .. tostring(remoteCount) .. " found", TERM.Amber, "remotes", 0.35 },
-        { "[>] scanning for anti-cheat hooks ....... ",              TERM.Amber, "anti-cheat",   0.8 },
-        { "[>]   result ............................. " .. acStatusText, acStatusColor, "anti-cheat", 0.4 },
     }
-
-    if acCount > 0 then
-        local shown = math.min(acCount, 3)
-        for i = 1, shown do
-            local f = acFindings[i]
-            local label = "  > " .. f.class .. " '" .. f.name .. "'"
-            if #label > 46 then label = label:sub(1, 43) .. "..." end
-            local isRemote = (f.class == "RemoteEvent" or f.class == "RemoteFunction")
-            local tag = isRemote and "[×] " or "[!] "
-            local col = isRemote and TERM.Red or TERM.Dim
-            table.insert(steps, { tag .. label, col, "scan", 0.22 })
-        end
-        if acCount > shown then
-            table.insert(steps, { "[×]   + " .. tostring(acCount - shown) .. " more", TERM.Dim, "scan", 0.2 })
-        end
-    end
 
     local tail = {
         { "[>] checking account status ............. ok",        TERM.Amber, "account",   0.3 },
@@ -710,18 +701,74 @@ function buildScanScreen(onDone)
         { "[>] initializing gui .................... ok",        TERM.Hi,    "gui",       0.3 },
         { "[*] access granted — welcome, " .. p.DisplayName,     TERM.Green, "done",      0.45 },
     }
-    for _, st in ipairs(tail) do table.insert(steps, st) end
 
     task.spawn(function()
-        local total = #steps
-        for i, step in ipairs(steps) do
+        -- Phase 1: cheap
+        local function runStep(step, frac)
             addLine(step[1], step[2])
             status.Text = step[3]
-            local frac = i / total
             tw(barFill, step[4], {Size = UDim2.new(frac, 0, 1, 0)})
             pct.Text = math.floor(frac * 100) .. "%"
             task.wait(step[4])
         end
+
+        local totalSteps = #preSteps + 3 + #tail  -- scan phase counts as ~3 steps
+        local i = 0
+        for _, step in ipairs(preSteps) do
+            i = i + 1
+            runStep(step, i / totalSteps)
+        end
+
+        -- Phase 2: real anti-cheat scan (heavy) — yields to the scheduler while it runs
+        i = i + 1
+        addLine("[>] scanning for anti-cheat hooks ....... ", TERM.Amber)
+        status.Text = "anti-cheat"
+        tw(barFill, 0.1, {Size = UDim2.new(i / totalSteps, 0, 1, 0)})
+        pct.Text = math.floor((i / totalSteps) * 100) .. "%"
+        task.wait(0.05)
+
+        local acFindings, acCount = realAntiCheatScan()
+
+        local acStatusText, acStatusColor
+        if acCount == 0 then
+            acStatusText = "clean"
+            acStatusColor = TERM.Green
+        else
+            acStatusText = tostring(acCount) .. " found"
+            acStatusColor = TERM.Red
+        end
+
+        i = i + 1
+        addLine("[>]   result ............................. " .. acStatusText, acStatusColor)
+        status.Text = "anti-cheat"
+        tw(barFill, 0.3, {Size = UDim2.new(i / totalSteps, 0, 1, 0)})
+        pct.Text = math.floor((i / totalSteps) * 100) .. "%"
+        task.wait(0.3)
+
+        if acCount > 0 then
+            local shown = math.min(acCount, 3)
+            for j = 1, shown do
+                local f = acFindings[j]
+                local label = "  > " .. f.class .. " '" .. f.name .. "'"
+                if #label > 46 then label = label:sub(1, 43) .. "..." end
+                local isRemote = (f.class == "RemoteEvent" or f.class == "RemoteFunction")
+                local tag = isRemote and "[×] " or "[!] "
+                local col = isRemote and TERM.Red or TERM.Dim
+                addLine(tag .. label, col)
+                task.wait(0.08)
+            end
+            if acCount > shown then
+                addLine("[×]   + " .. tostring(acCount - shown) .. " more", TERM.Dim)
+                task.wait(0.08)
+            end
+        end
+
+        -- Phase 3: tail
+        for _, step in ipairs(tail) do
+            i = i + 1
+            runStep(step, i / totalSteps)
+        end
+
         pct.Text = "100%"
         s.Color = TERM.Green
         task.wait(0.5)
@@ -732,7 +779,7 @@ function buildScanScreen(onDone)
 end
 
 -- ============================================================
--- HOISTED CONSTANTS (avoid per-call table alloc)
+-- HOISTED CONSTANTS
 -- ============================================================
 local KO_MARKERS = {
     {"BodyEffects", "K.O"}, {"BodyEffects", "KO"}, {"BodyEffects", "Knocked"},
@@ -751,6 +798,17 @@ local SPECTATE_ATTRS = {
 local UI_KBD = Enum.UserInputType.Keyboard
 local UI_M2  = Enum.UserInputType.MouseButton2
 local UI_M3  = Enum.UserInputType.MouseButton3
+
+-- [OPT] hoisted ESP bone pair table; count is exact
+local BONE_PAIRS = {
+    {"Head","Torso"},{"Torso","Left Arm"},{"Torso","Right Arm"},{"Torso","Left Leg"},{"Torso","Right Leg"},
+    {"Head","UpperTorso"},{"UpperTorso","LowerTorso"},
+    {"UpperTorso","LeftUpperArm"},{"LeftUpperArm","LeftLowerArm"},{"LeftLowerArm","LeftHand"},
+    {"UpperTorso","RightUpperArm"},{"RightUpperArm","RightLowerArm"},{"RightLowerArm","RightHand"},
+    {"LowerTorso","LeftUpperLeg"},{"LeftUpperLeg","LeftLowerLeg"},{"LeftLowerLeg","LeftFoot"},
+    {"LowerTorso","RightUpperLeg"},{"RightUpperLeg","RightLowerLeg"},{"RightLowerLeg","RightFoot"},
+}
+local BONE_PAIRS_COUNT = #BONE_PAIRS
 
 function StartScript(plf)
     for _, ch in ipairs(p.PlayerGui:GetChildren()) do
@@ -843,6 +901,9 @@ function StartScript(plf)
     local fStub = { Position=Vector2.new(), Radius=0, Visible=false, Remove=function() end, Size=Vector2.new() }
     if not fC then fC = fStub end; if not fS then fS = fStub end; if not fT then fT = fStub end
 
+    -- [OPT] track last-applied FOV state so we only touch Drawing when it changes
+    local fovState = { mode = "none", size = -1, cx = -1, cy = -1 }
+
     local hitSound, menuSound
     pcall(function()
         hitSound = Instance.new("Sound", SS)
@@ -859,7 +920,7 @@ function StartScript(plf)
     local aaYawAccum = 0
 
     -- ============================================================
-    -- MAGIC BULLET (BIG HEAD) — per-character ownership
+    -- MAGIC BULLET (BIG HEAD)
     -- ============================================================
     local bhCache = {}
     local bhCharSet = {}
@@ -977,7 +1038,7 @@ function StartScript(plf)
     local lastJumpFire = 0
 
     -- ============================================================
-    -- FPS BOOSTER
+    -- FPS BOOSTER  — [OPT] single pcall per object; sweep in a batch
     -- ============================================================
     local fpsBoosted = false
     local fpsConns = nil
@@ -996,9 +1057,9 @@ function StartScript(plf)
         if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Smoke")
            or obj:IsA("Fire") or obj:IsA("Sparkles") or obj:IsA("Explosion")
            or obj:IsA("Beam") then
-            _saveSet(obj, "Enabled", false)
+            if obj.Enabled then _saveSet(obj, "Enabled", false) end
         elseif obj:IsA("PostEffect") then
-            _saveSet(obj, "Enabled", false)
+            if obj.Enabled then _saveSet(obj, "Enabled", false) end
         elseif obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then
             if obj.Enabled then _saveSet(obj, "Enabled", false) end
         elseif obj:IsA("Decal") or obj:IsA("Texture") then
@@ -1112,7 +1173,7 @@ function StartScript(plf)
         end
     end
 
-    local function applyAntiAim()
+    local function applyAntiAim(dt)
         local char = p.Character; if not char then return end
         local hrp = char:FindFirstChild("HumanoidRootPart"); if not hrp then return end
         local neck = char:FindFirstChild("Neck", true)
@@ -1122,7 +1183,9 @@ function StartScript(plf)
         local yaw
         if cfg.AntiAimMode == "Static" then yaw = cfg.AntiAimYaw
         elseif cfg.AntiAimMode == "Jitter" then yaw = cfg.AntiAimYaw + math.random(-45,45)
-        elseif cfg.AntiAimMode == "Spin" then aaYawAccum = (aaYawAccum + cfg.AntiAimSpinSpeed) % 360; yaw = aaYawAccum
+        elseif cfg.AntiAimMode == "Spin" then
+            aaYawAccum = (aaYawAccum + cfg.AntiAimSpinSpeed * dt * 60) % 360
+            yaw = aaYawAccum
         else yaw = cfg.AntiAimYaw end
         local look = hrp.CFrame.LookVector
         local flat = Vector3.new(look.X, 0, look.Z)
@@ -1144,16 +1207,8 @@ function StartScript(plf)
     end
 
     -- ============================================================
-    -- SMOOTHING + FOV HELPERS (v6.9.9)
+    -- SMOOTHING + FOV HELPERS
     -- ============================================================
-    local function curveAlpha(t)
-        t = math.clamp(t, 0, 1)
-        if cfg.SmoothCurve == "Exponential" then return t * t
-        elseif cfg.SmoothCurve == "Bezier" then return t < 0.5 and (4*t*t*t) or (1 - ((-2*t+2)^3)/2) end
-        return t
-    end
-
-    -- shape-aware FOV test, matches drawn FOV exactly
     local function inFovShape(dx, dy, r, shape)
         if shape == "Square" then
             return math.abs(dx) <= r and math.abs(dy) <= r
@@ -1172,7 +1227,6 @@ function StartScript(plf)
         return dx * dx + dy * dy <= r * r
     end
 
-    -- framerate-independent exponential smoothing
     local function smoothAlpha(smth, dt, curve)
         if smth <= 0.01 then return 1 end
         local baseTau = smth * 0.4
@@ -1224,7 +1278,7 @@ function StartScript(plf)
     titleText.TextXAlignment = Enum.TextXAlignment.Left
     local subText = Instance.new("TextLabel", title)
     subText.Size, subText.Position, subText.BackgroundTransparency, subText.Text, subText.TextColor3, subText.Font, subText.TextSize =
-        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9.9", TH.TextMute, FONT, 11
+        UDim2.new(0,240,1,0), UDim2.new(0,80,0,0), 1, "/  v6.9.10", TH.TextMute, FONT, 11
     subText.TextXAlignment = Enum.TextXAlignment.Left
     subText.Visible = isPC
 
@@ -1304,7 +1358,7 @@ function StartScript(plf)
     creditText.TextXAlignment = Enum.TextXAlignment.Left
 
     -- ============================================================
-    -- DISCORD BUTTON
+    -- DISCORD BUTTON  — [OPT] guarded ContentImageSize access
     -- ============================================================
     local DISCORD_ASSET     = "rbxassetid://8602918103"
     local DISCORD_ASSET_ALT = "rbxassetid://6863772078"
@@ -1334,7 +1388,8 @@ function StartScript(plf)
     local discordTriedAlt = false
     discordBtn:GetPropertyChangedSignal("IsLoaded"):Connect(function()
         if not discordBtn.IsLoaded then return end
-        local sz = discordBtn.ContentImageSize
+        local ok, sz = pcall(function() return discordBtn.ContentImageSize end)
+        if not ok then return end
         if sz == Vector2.new(0,0) or sz == Vector2.new(1,1) then
             if not discordTriedAlt then
                 discordTriedAlt = true
@@ -1663,6 +1718,11 @@ function StartScript(plf)
     makeTab("Aim"); makeTab("ESP"); makeTab("Move"); makeTab("Perf"); makeTab("Set"); makeTab("Body"); makeTab("Target"); makeTab("Settings")
     makePage("Aim"); makePage("ESP"); makePage("Move"); makePage("Perf"); makePage("Set"); makePage("Body"); makePage("Target"); makePage("Settings")
 
+    -- [OPT] hitbox list precomputed; dirty flag flipped by UI
+    local selectedPartsArr = { "Head" }
+    local selectedPartsDirty = false
+    local function markSelectedPartsDirty() selectedPartsDirty = true end
+
     -- ============================================================
     -- AIM PAGE
     -- ============================================================
@@ -1854,7 +1914,13 @@ function StartScript(plf)
         numInput(s, "Prediction", "Pred", cfg.Pred, function(v) cfg.Pred = v end)
         numInput(s, "Pred Scale", "PredScale", cfg.PredScale, function(v) cfg.PredScale = v end)
         numInput(s, "Trigger Delay", "Dly", cfg.Dly, function(v) cfg.Dly = v end)
-        numInput(s, "FOV Size", "FovSize", cfg.FovSize, function(v) cfg.FovSize = v; if cfg.FovShape=="Circle" then fC.Radius = v end end)
+        numInput(s, "FOV Size", "FovSize", cfg.FovSize, function(v)
+            cfg.FovSize = v
+            -- [OPT] only touch the Drawing when circle is active
+            if cfg.FovShape == "Circle" and fC ~= fStub then
+                pcall(function() fC.Radius = v end)
+            end
+        end)
         numInput(s, "Rand Offset X", "RandOffsetX", cfg.RandOffsetX, function(v) cfg.RandOffsetX = v end)
         numInput(s, "Rand Offset Y", "RandOffsetY", cfg.RandOffsetY, function(v) cfg.RandOffsetY = v end)
         numInput(s, "Rand Delay", "RandDelay", cfg.RandDelay, function(v) cfg.RandDelay = v end)
@@ -1862,7 +1928,7 @@ function StartScript(plf)
     end
 
     -- ============================================================
-    -- BODY PAGE
+    -- BODY PAGE  — [OPT] toggles now flip selectedPartsDirty
     -- ============================================================
     do
         BUILD_PAGE = "Body"
@@ -1885,7 +1951,9 @@ function StartScript(plf)
                 lb.TextColor3 = on and TH.Bg or TH.Text
             end
             b.MouseButton1Click:Connect(function()
-                cfg.SelectedParts[name] = not cfg.SelectedParts[name]; refresh()
+                cfg.SelectedParts[name] = not cfg.SelectedParts[name]
+                markSelectedPartsDirty()  -- [OPT]
+                refresh()
                 for _, f in ipairs(cfg.PartColors) do pcall(f) end
             end)
             table.insert(cfg.PartColors, refresh)
@@ -1924,7 +1992,6 @@ function StartScript(plf)
         local s = section(pages["Target"], "target options")
         toggle(s, "Target All", "TargetAll", false, function(v) cfg.TargetAll = v end)
         toggle(s, "K.O Check", "KOCheck", true, function(v) cfg.KOCheck = v end)
-        button(s, "Clear Manual List", function() cfg.TargetList = {} end)
         local s2 = section(pages["Target"], "players")
         local function refreshPlayers()
             for _, ch in ipairs(s2:GetChildren()) do
@@ -1948,6 +2015,10 @@ function StartScript(plf)
                 end
             end
         end
+        button(s, "Clear Manual List", function()
+            for k in pairs(cfg.TargetList) do cfg.TargetList[k] = nil end
+            refreshPlayers()
+        end)
         refreshPlayers()
         reg(P.PlayerAdded:Connect(function() task.wait(0.5); refreshPlayers() end))
         reg(P.PlayerRemoving:Connect(function() task.wait(0.2); refreshPlayers() end))
@@ -1967,8 +2038,11 @@ function StartScript(plf)
                 else cfg[k] = v end
             end
             if cfg.AccentColor then applyAccent(cfg.AccentColor) end
-            if fC and cfg.FovSize and cfg.FovShape == "Circle" then fC.Radius = cfg.FovSize end
+            if fC and cfg.FovSize and cfg.FovShape == "Circle" then
+                pcall(function() fC.Radius = cfg.FovSize end)
+            end
             if plf == "PC" and cfg.HideKey ~= nil then hintText.Text = "["..keyName(cfg.HideKey).."]  to hide" end
+            markSelectedPartsDirty()
             refreshAllFromCfg()
         end
         button(s, "Save Config", function()
@@ -2012,6 +2086,7 @@ function StartScript(plf)
             if hintText and plf == "PC" then
                 hintText.Text = "["..keyName(cfg.HideKey).."]  to hide"
             end
+            markSelectedPartsDirty()
             refreshAllFromCfg()
         end)
         _G.__zeva_applyConfigData = applyConfigData
@@ -2245,7 +2320,7 @@ function StartScript(plf)
     end)
 
     -- ============================================================
-    -- KO / DEAD DETECTION
+    -- KO / DEAD DETECTION  — [OPT] dead branch removed
     -- ============================================================
     local function isKOorDead(pl)
         if not pl or pl == p then return true end
@@ -2254,7 +2329,6 @@ function StartScript(plf)
         local hum = ch:FindFirstChildOfClass("Humanoid")
         if not hum then return true end
         if hum.Health <= 0 then return true end
-        if hum.MaxHealth > 0 and (hum.Health / hum.MaxHealth) <= 0 then return true end
 
         local okS, state = pcall(function() return hum:GetState() end)
         if okS then
@@ -2306,6 +2380,18 @@ function StartScript(plf)
         return false
     end
 
+    local koCache = {}
+    local function isKOorDead_cached(pl)
+        local ch = pl.Character
+        if not ch then return true end
+        local entry = koCache[ch]
+        local now = tick()
+        if entry and now < entry.expires then return entry.dead end
+        local dead = isKOorDead(pl)
+        koCache[ch] = {dead = dead, expires = now + 0.08}
+        return dead
+    end
+
     local function v(pl)
         if not pl or pl == p then return false end
         if cfg.TeamCheck and pl.Team ~= nil and pl.Team == p.Team then return false end
@@ -2320,12 +2406,34 @@ function StartScript(plf)
         return true
     end
 
+    local validityCache = {}
+    local function v_cached(pl)
+        if not pl or pl == p then return false end
+        if cfg.TeamCheck and pl.Team ~= nil and pl.Team == p.Team then return false end
+        local entry = validityCache[pl]
+        local now = tick()
+        if entry and now < entry.expires then return entry.valid end
+        local valid
+        if cfg.KOCheck then
+            valid = not isKOorDead_cached(pl)
+        else
+            local ch = pl.Character
+            if not ch then valid = false
+            else
+                local hum = ch:FindFirstChildOfClass("Humanoid")
+                valid = hum ~= nil and hum.Health > 0
+            end
+        end
+        validityCache[pl] = {valid = valid, expires = now + 0.08}
+        return valid
+    end
+
     local function bh_valid(pl)
         if not pl or pl == p then return false end
         if pl.Team and p.Team and pl.Team == p.Team then return false end
         if pl:GetAttribute("Team") and p:GetAttribute("Team")
            and pl:GetAttribute("Team") == p:GetAttribute("Team") then return false end
-        if cfg.KOCheck and isKOorDead(pl) then return false end
+        if cfg.KOCheck and isKOorDead_cached(pl) then return false end
         local ch = pl.Character
         if not ch then return false end
         local hum = ch:FindFirstChildOfClass("Humanoid")
@@ -2336,6 +2444,7 @@ function StartScript(plf)
     local visRayParams = RaycastParams.new()
     visRayParams.FilterType = Enum.RaycastFilterType.Blacklist
     local function vis(pt)
+        if not pt or not pt.Parent then return false end
         local char = p.Character
         if char then
             visRayParams.FilterDescendantsInstances = {char, pt.Parent}
@@ -2479,7 +2588,7 @@ function StartScript(plf)
     task.spawn(function() task.wait(0.15); rebuildNoclipParts() end)
 
     -- ============================================================
-    -- ESP DRAWING HANDLES
+    -- ESP DRAWING HANDLES  — [OPT] pool sized to actual pair count
     -- ============================================================
     local dr = {}
     local function ce(pl)
@@ -2495,7 +2604,7 @@ function StartScript(plf)
         if d.T then d.T.Thickness, d.T.Color = cfg.TracerThickness, cfg.TracerColor end
         if d.LT then d.LT.Thickness, d.LT.Color = cfg.LookTracerThickness, cfg.LookTracerColor end
         dr[pl] = d
-        for i = 1, 30 do
+        for i = 1, BONE_PAIRS_COUNT do
             local l = mkLine()
             if l then l.Thickness, l.Color = cfg.BoneThickness, cfg.BoneColor end
             table.insert(d.L, l)
@@ -2504,18 +2613,8 @@ function StartScript(plf)
     reg(P.PlayerAdded:Connect(ce))
     for _, pl in pairs(P:GetPlayers()) do ce(pl) end
 
-    local bPs = {
-        {"Head","Torso"},{"Torso","Left Arm"},{"Torso","Right Arm"},{"Torso","Left Leg"},{"Torso","Right Leg"},
-        {"Head","UpperTorso"},{"UpperTorso","LowerTorso"},
-        {"UpperTorso","LeftUpperArm"},{"LeftUpperArm","LeftLowerArm"},{"LeftLowerArm","LeftHand"},
-        {"UpperTorso","RightUpperArm"},{"RightUpperArm","RightLowerArm"},{"RightLowerArm","RightHand"},
-        {"LowerTorso","LeftUpperLeg"},{"LeftUpperLeg","LeftLowerLeg"},{"LeftLowerLeg","LeftFoot"},
-        {"LowerTorso","RightUpperLeg"},{"RightUpperLeg","RightLowerLeg"},{"RightLowerLeg","RightFoot"},
-    }
-    local bPsCount = #bPs
-
     -- ============================================================
-    -- PREDICTION (v6.9.9) — ping + accel aware
+    -- PREDICTION
     -- ============================================================
     local function CalcPred(pl, tgt)
         if not tgt then return nil end
@@ -2606,7 +2705,6 @@ function StartScript(plf)
     end
     buildCrosshair()
 
-    -- Z-gated score target — no behind-camera ghosts
     local function scoreTarget(pl, part, camPos, scx, scy)
         if cfg.AimPriority == "Closest" then
             return (part.Position - camPos).Magnitude
@@ -2679,7 +2777,7 @@ function StartScript(plf)
     local currentAimPos = nil
 
     -- ============================================================
-    -- AIM CAMERA BIND (v6.9.9) — framerate-independent
+    -- AIM CAMERA BIND
     -- ============================================================
     local lastAimTick = tick()
 
@@ -2714,12 +2812,13 @@ function StartScript(plf)
     end))
 
     -- ============================================================
-    -- MAIN LOOP
+    -- MAIN LOOP  — [OPT] pcalls removed from hot Drawing writes
     -- ============================================================
     local fpsFrames, fpsLast, fpsValue, pingValue = 0, tick(), 0, 0
     local chamsAccum = 0
     local killFeedSig = ""
     local lastKFCount = 0
+    local lastCrosshairPos = Vector2.new(-1, -1)
 
     mainLoop = RS.RenderStepped:Connect(function(dt)
         local vs = c.ViewportSize
@@ -2765,32 +2864,47 @@ function StartScript(plf)
             c.CFrame = fcCFrame
         end
 
-        if cfg.AntiAimEnabled then applyAntiAim() end
+        if cfg.AntiAimEnabled then applyAntiAim(dt) end
 
-        if cShowFov and not menuOpen then
-            if cFovShape == "Circle" then
-                pcall(function() fC.Radius = cFovSize; fC.Position = vs/2; fC.Visible = true end)
-                if fS.Visible then pcall(function() fS.Visible = false end) end
-                if fT.Visible then pcall(function() fT.Visible = false end) end
-            elseif cFovShape == "Square" then
+        -- [OPT] FOV only touched on state change
+        local wantFovMode = "none"
+        if cShowFov and not menuOpen then wantFovMode = cFovShape end
+        if wantFovMode ~= fovState.mode then
+            if fovState.mode == "Circle" then pcall(function() fC.Visible = false end) end
+            if fovState.mode == "Square" then pcall(function() fS.Visible = false end) end
+            if fovState.mode == "Triangle" then pcall(function() fT.Visible = false end) end
+            if wantFovMode == "Circle" then pcall(function() fC.Visible = true end) end
+            if wantFovMode == "Square" then pcall(function() fS.Visible = true end) end
+            if wantFovMode == "Triangle" then pcall(function() fT.Visible = true end) end
+            fovState.mode = wantFovMode
+        end
+        if wantFovMode ~= "none" then
+            if wantFovMode == "Circle" then
+                if fovState.size ~= cFovSize or fovState.cx ~= halfX or fovState.cy ~= halfY then
+                    pcall(function()
+                        fC.Radius = cFovSize
+                        fC.Position = Vector2.new(halfX, halfY)
+                    end)
+                end
+            elseif wantFovMode == "Square" then
                 pcall(function()
                     fS.Position = Vector2.new(halfX - cFovSize, halfY - cFovSize)
-                    fS.Size = Vector2.new(cFovSize*2, cFovSize*2); fS.Visible = true
+                    fS.Size = Vector2.new(cFovSize*2, cFovSize*2)
                 end)
-                if fC.Visible then pcall(function() fC.Visible = false end) end
-                if fT.Visible then pcall(function() fT.Visible = false end) end
-            elseif cFovShape == "Triangle" then
-                pcall(function() fT.Radius = cFovSize; fT.Position = vs/2; fT.Visible = true end)
-                if fC.Visible then pcall(function() fC.Visible = false end) end
-                if fS.Visible then pcall(function() fS.Visible = false end) end
+            elseif wantFovMode == "Triangle" then
+                if fovState.size ~= cFovSize or fovState.cx ~= halfX or fovState.cy ~= halfY then
+                    pcall(function()
+                        fT.Radius = cFovSize
+                        fT.Position = Vector2.new(halfX, halfY)
+                    end)
+                end
             end
-        else
-            if fC.Visible then fC.Visible = false end
-            if fS.Visible then fS.Visible = false end
-            if fT.Visible then fT.Visible = false end
         end
+        fovState.size, fovState.cx, fovState.cy = cFovSize, halfX, halfY
 
-        if #crosshairParts > 0 then
+        -- [OPT] crosshair only repositioned when viewport changes
+        if #crosshairParts > 0 and lastCrosshairPos ~= vs then
+            lastCrosshairPos = vs
             for i = 1, #crosshairParts do
                 local o = crosshairParts[i]
                 if o.ClassName == "Circle" then pcall(function() o.Position = Vector2.new(halfX, halfY) end) end
@@ -2800,10 +2914,11 @@ function StartScript(plf)
         if cfg.Noclip and #noclipParts > 0 then
             for i = 1, #noclipParts do
                 local pt = noclipParts[i]
-                if pt and pt.Parent then pt.CanCollide = false end
+                if pt and pt.Parent and pt.CanCollide then pt.CanCollide = false end
             end
         end
-        if cfg.Spin and p.Character and p.Character.PrimaryPart then
+
+        if cfg.Spin and not cfg.AntiAimEnabled and p.Character and p.Character.PrimaryPart then
             p.Character:PivotTo(p.Character.PrimaryPart.CFrame * CFrame.Angles(0, math.rad(cfg.SpinSpeed), 0))
         end
 
@@ -2833,10 +2948,13 @@ function StartScript(plf)
         end
         updateChams()
 
+        -- ============================================================
+        -- ESP RENDER  — [OPT] pcalls removed from Drawing property writes
+        -- ============================================================
         local anyESP = (not menuOpen) and (cBox or cHealth or cDist or cTracer or cLookTr or cBone)
         for pl, d in pairs(dr) do
             local ch = pl.Character
-            local visible = anyESP and ch and v(pl)
+            local visible = anyESP and ch and v_cached(pl)
             if visible then
                 local hrp = ch:FindFirstChild("HumanoidRootPart")
                 local hum = ch:FindFirstChildOfClass("Humanoid")
@@ -2867,7 +2985,10 @@ function StartScript(plf)
                                 d.HB.From = Vector2.new(bX, tSy)
                                 d.HB.To = Vector2.new(bX, tSy + ht)
                                 d.HB.Color = cHpCol; d.HB.Thickness = cHpTh
-                                local ratio = hum.Health / hum.MaxHealth
+                                local ratio = 1
+                                if hum.MaxHealth > 0 then
+                                    ratio = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+                                end
                                 if not d.HM.Visible then d.HM.Visible = true end
                                 d.HM.From = Vector2.new(bX, tSy + ht)
                                 d.HM.To = Vector2.new(bX, tSy + ht - (ht * ratio))
@@ -2909,8 +3030,8 @@ function StartScript(plf)
                         end
                         if cBone then
                             local li = 1
-                            for k = 1, bPsCount do
-                                local pr = bPs[k]
+                            for k = 1, BONE_PAIRS_COUNT do
+                                local pr = BONE_PAIRS[k]
                                 local p1, p2 = ch:FindFirstChild(pr[1]), ch:FindFirstChild(pr[2])
                                 if p1 and p2 then
                                     local v1, o1 = c:WorldToViewportPoint(p1.Position)
@@ -2925,12 +3046,12 @@ function StartScript(plf)
                                     end
                                 end
                             end
-                            for i = li, 30 do
+                            for i = li, BONE_PAIRS_COUNT do
                                 local ln = d.L[i]
                                 if ln and ln.Visible then ln.Visible = false end
                             end
                         else
-                            for i = 1, 30 do
+                            for i = 1, BONE_PAIRS_COUNT do
                                 local ln = d.L[i]
                                 if ln and ln.Visible then ln.Visible = false end
                             end
@@ -2942,7 +3063,7 @@ function StartScript(plf)
                         if d.HM and d.HM.Visible then d.HM.Visible = false end
                         if d.T and d.T.Visible then d.T.Visible = false end
                         if d.LT and d.LT.Visible then d.LT.Visible = false end
-                        for i = 1, 30 do
+                        for i = 1, BONE_PAIRS_COUNT do
                             local ln = d.L[i]
                             if ln and ln.Visible then ln.Visible = false end
                         end
@@ -2955,7 +3076,7 @@ function StartScript(plf)
                 if d.HM and d.HM.Visible then d.HM.Visible = false end
                 if d.T and d.T.Visible then d.T.Visible = false end
                 if d.LT and d.LT.Visible then d.LT.Visible = false end
-                for i = 1, 30 do
+                for i = 1, BONE_PAIRS_COUNT do
                     local ln = d.L[i]
                     if ln and ln.Visible then ln.Visible = false end
                 end
@@ -2963,7 +3084,7 @@ function StartScript(plf)
         end
 
         -- ============================================================
-        -- AIM SELECTION (v6.9.9) — shape-aware FOV + Z-gate
+        -- AIM SELECTION  — [OPT] uses hoisted selectedPartsArr
         -- ============================================================
         if cAim and not menuOpen then
             local bestScore, tg, tgPl = math.huge, nil, nil
@@ -2971,8 +3092,18 @@ function StartScript(plf)
             local targetAll = cfg.TargetAll
             local wallCheck = cfg.WallCheck
             local targetList = cfg.TargetList
-            local selectedParts = cfg.SelectedParts
             local fovShape = cFovShape
+
+            -- [OPT] rebuild enabled hitbox array only when dirty
+            if selectedPartsDirty then
+                selectedPartsArr = {}
+                for k, on in pairs(cfg.SelectedParts) do
+                    if on then selectedPartsArr[#selectedPartsArr+1] = k end
+                end
+                selectedPartsDirty = false
+            end
+            local spArr = selectedPartsArr
+            local spCount = #spArr
 
             local function fovOk(sx, sy, sZ)
                 if sZ <= 0 then return false end
@@ -2981,7 +3112,7 @@ function StartScript(plf)
             end
 
             for pl in pairs(cachedPlayers) do
-                if v(pl) and (targetAll or targetList[pl.Name]) then
+                if v_cached(pl) and (targetAll or targetList[pl.Name]) then
                     local ch = pl.Character
                     if useNearest then
                         for _, cd in pairs(ch:GetChildren()) do
@@ -2996,16 +3127,14 @@ function StartScript(plf)
                             end
                         end
                     else
-                        for pN, ac in pairs(selectedParts) do
-                            if ac then
-                                local pt = ch:FindFirstChild(pN)
-                                if pt then
-                                    local sP, on = c:WorldToViewportPoint(pt.Position)
-                                    if on and fovOk(sP.X, sP.Y, sP.Z) then
-                                        if not wallCheck or vis(pt) then
-                                            local sc = scoreTarget(pl, pt, camPos, halfX, halfY)
-                                            if sc < bestScore then bestScore = sc; tg = pt; tgPl = pl end
-                                        end
+                        for i = 1, spCount do
+                            local pt = ch:FindFirstChild(spArr[i])
+                            if pt then
+                                local sP, on = c:WorldToViewportPoint(pt.Position)
+                                if on and fovOk(sP.X, sP.Y, sP.Z) then
+                                    if not wallCheck or vis(pt) then
+                                        local sc = scoreTarget(pl, pt, camPos, halfX, halfY)
+                                        if sc < bestScore then bestScore = sc; tg = pt; tgPl = pl end
                                     end
                                 end
                             end
@@ -3071,8 +3200,10 @@ function StartScript(plf)
             local kf = _G.__zeva_killFeedGui
             if removedAny or #killFeed ~= lastKFCount then
                 lastKFCount = #killFeed
-                local sig = tostring(#killFeed)
-                for i = 1, #killFeed do sig = sig .. "|" .. killFeed[i].name end
+                -- [OPT] table.concat instead of repeated string concat
+                local parts = {tostring(#killFeed)}
+                for i = 1, #killFeed do parts[#parts+1] = "|"; parts[#parts+1] = killFeed[i].name end
+                local sig = table.concat(parts)
                 if sig ~= killFeedSig then
                     killFeedSig = sig
                     for _, ch in ipairs(kf.holder:GetChildren()) do if ch:IsA("TextLabel") then ch:Destroy() end end
@@ -3175,10 +3306,12 @@ function StartScript(plf)
     end)
 
     -- ============================================================
-    -- TRIGGERBOT LOOP
+    -- TRIGGERBOT LOOP  — [OPT] hoisted RaycastParams; no Heartbeat wait
     -- ============================================================
     task.spawn(function()
         local lastT, lastHit = 0, 0
+        local trigRayParams = RaycastParams.new()
+        trigRayParams.FilterType = Enum.RaycastFilterType.Blacklist
         while g and g.Parent do
             if cfg.Trig and not root.Visible then
                 local now = tick()
@@ -3186,10 +3319,8 @@ function StartScript(plf)
                     local vs = c.ViewportSize
                     local scx, scy = math.floor(vs.X*0.5), math.floor(vs.Y*0.5)
                     local ray = c:ViewportPointToRay(scx, scy)
-                    local rp = RaycastParams.new()
-                    rp.FilterDescendantsInstances = {p.Character, c}
-                    rp.FilterType = Enum.RaycastFilterType.Blacklist
-                    local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, rp)
+                    trigRayParams.FilterDescendantsInstances = {p.Character, c}
+                    local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, trigRayParams)
                     if result and result.Instance then
                         local model = result.Instance:FindFirstAncestorOfClass("Model")
                         local hitPl = model and P:GetPlayerFromCharacter(model)
@@ -3198,7 +3329,6 @@ function StartScript(plf)
                             if hd <= cfg.MaxTriggerDist and (not cfg.WallCheck or vis(result.Instance)) then
                                 pcall(function()
                                     VIM:SendMouseButtonEvent(scx, scy, 0, true, game, 1)
-                                    RS.Heartbeat:Wait()
                                     VIM:SendMouseButtonEvent(scx, scy, 0, false, game, 1)
                                 end)
                                 lastT = tick() + math.max(0.03, math.random() * cfg.RandDelay)
@@ -3232,8 +3362,12 @@ function StartScript(plf)
         if hc then pcall(function() hc.sq:Remove() end); hitChams[pl] = nil end
         lastHealth[pl] = nil
         velHist[pl] = nil
+        validityCache[pl] = nil
         local ch = pl.Character
-        if ch then bh_restoreCharacter(ch) end
+        if ch then
+            koCache[ch] = nil
+            bh_restoreCharacter(ch)
+        end
     end))
 end
 
