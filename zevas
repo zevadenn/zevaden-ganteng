@@ -383,7 +383,7 @@ end
 function buildSelector()
     clearSelectors()
     local chG = Instance.new("ScreenGui", p.PlayerGui)
-    chG.Name = "zeva_sel_" .. tostring(math.random(1e6, 9e6))
+    chG.Name = "titit_sel_" .. tostring(math.random(1e6, 9e6))
     chG.ResetOnSpawn = false; chG.IgnoreGuiInset = true; chG.DisplayOrder = 100
 
     local outer, body, s = termWindow(chG, "/dev/zeva --boot", 420, 240)
@@ -440,7 +440,7 @@ end
 function buildKeyScreen()
     clearSelectors()
     local kG = Instance.new("ScreenGui", p.PlayerGui)
-    kG.Name = "zeva_key_" .. tostring(math.random(1e6, 9e6))
+    kG.Name = "titit_key_" .. tostring(math.random(1e6, 9e6))
     kG.ResetOnSpawn = false; kG.IgnoreGuiInset = true; kG.DisplayOrder = 100
 
     local outer, body, s = termWindow(kG, "/dev/zeva --auth", 420, 220)
