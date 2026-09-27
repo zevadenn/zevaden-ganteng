@@ -440,10 +440,10 @@ end
 function buildKeyScreen()
     clearSelectors()
     local kG = Instance.new("ScreenGui", p.PlayerGui)
-    kG.Name = "titit_key_" .. tostring(math.random(1e6, 9e6))
+    kG.Name = "zeva_key_" .. tostring(math.random(1e6, 9e6))
     kG.ResetOnSpawn = false; kG.IgnoreGuiInset = true; kG.DisplayOrder = 100
 
-    local outer, body, s = termWindow(kG, "/dev/zeva --auth", 420, 220)
+    local outer, body, s = termWindow(kG, "/dev/zyz --auth", 420, 220)
 
     local pad = Instance.new("UIPadding", body)
     pad.PaddingLeft = UDim.new(0, 16); pad.PaddingRight = UDim.new(0, 16)
