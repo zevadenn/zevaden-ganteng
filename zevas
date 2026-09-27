@@ -405,7 +405,7 @@ function buildSelector()
         return l
     end
 
-    line("CHEAT TERMINAL", TERM.Hi, 14, 0)
+    line("VIP TERMINAL", TERM.Hi, 14, 0)
     line(" ", TERM.Dim, 11, 18)
     line("> mount /dev/zeva .......... ok", TERM.Amber, 12, 42)
     line("> loading auth daemon ...... ok", TERM.Amber, 12, 58)
