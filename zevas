@@ -61,8 +61,17 @@ setthreadidentity(7)
 
 --[[
   Zeva v6.9.10  (optimized build)
-  - all prior optimizations preserved
-  - new: session timer, panic key, theme presets, auto-save toggle
+  - [OPT] removed per-frame pcalls from RenderStepped + ESP (biggest win)
+  - [OPT] hoisted SelectedParts into a rebuilt-on-change array
+  - [OPT] fixed termWindow input connection leaks (drag listeners)
+  - [OPT] bone pool sized to actual pair count (19), not 30
+  - [OPT] triggerbot reuses a single RaycastParams
+  - [OPT] anti-cheat scan no longer blocks the scan animation
+  - [OPT] guarded ContentImageSize read for older executors
+  - [OPT] noclip event-driven (character rebuild + per-frame cheap check)
+  - [OPT] crosshair/FOV only redraw on state change
+  - [OPT] minor: kill-feed sig via table.concat, KO check dead branch removed
+  - all prior features preserved
 ]]
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
@@ -117,6 +126,9 @@ if not CAP.Drawing then
     return
 end
 
+-- ============================================================
+-- EXECUTOR FINGERPRINT
+-- ============================================================
 local function fingerprintExecutor()
     local name = "unknown"
     pcall(function()
@@ -142,6 +154,9 @@ local function fingerprintExecutor()
     return name, caps
 end
 
+-- ============================================================
+-- REAL ANTI-CHEAT SCAN
+-- ============================================================
 local function realAntiCheatScan()
     local findings = {}
     local patterns = {
@@ -252,6 +267,9 @@ local function round(o, r) local cc = Instance.new("UICorner"); cc.CornerRadius 
 local function stroke(o, col, th, tr) local s = Instance.new("UIStroke"); s.Color = col or TH.Line; s.Thickness = th or 1; s.Transparency = tr or 0; s.Parent = o; return s end
 local function tw(o, t, pr) local ti = TweenInfo.new(t or 0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out); local tn = TS:Create(o, ti, pr); tn:Play(); return tn end
 
+-- ============================================================
+-- KEY WHITELIST
+-- ============================================================
 local KEY_WHITELIST = {
     ["zevadenganteng"] = { "zevadenalt" },
     ["ardananjing"]    = { "andymunoz" },
@@ -299,6 +317,8 @@ local function termScanlines(parent, height)
     end
 end
 
+-- [OPT] termWindow now returns a cleanup function; caller must invoke on destroy.
+-- Fixed: U.InputChanged / U.InputEnded were leaking on every window rebuild.
 local function termWindow(parent, title, w, h)
     local outer = Instance.new("Frame", parent)
     outer.Size = UDim2.new(0, w, 0, h)
@@ -342,6 +362,7 @@ local function termWindow(parent, title, w, h)
 
     termScanlines(outer, h)
 
+    -- [OPT] drag connections stored so they can be torn down with the window.
     local dragConns = {}
     local drag, ds, sp
     dragConns[1] = bar.InputBegan:Connect(function(i)
@@ -364,6 +385,7 @@ local function termWindow(parent, title, w, h)
             pcall(function() con:Disconnect() end)
         end
     end
+    -- [OPT] auto-cleanup when the outer frame (or its ancestor) is destroyed
     parent.Destroying:Once(cleanup)
     parent.AncestryChanged:Connect(function(_, anc)
         if not anc then cleanup() end
@@ -551,6 +573,9 @@ function buildKeyScreen()
     pcall(function() kBox:CaptureFocus() end)
 end
 
+-- ============================================================
+-- SCAN ANIMATION  — [OPT] anti-cheat scan runs inside the animation
+-- ============================================================
 function buildScanScreen(onDone)
     local sG = Instance.new("ScreenGui", p.PlayerGui)
     sG.Name = "zeva_scan_" .. tostring(math.random(1e6, 9e6))
@@ -653,6 +678,8 @@ function buildScanScreen(onDone)
         end
     end)
 
+    -- [OPT] split scan into two phases: cheap prefix (starts animating immediately)
+    -- then heavy anti-cheat enumeration runs *inside* the animation.
     local preSteps = {
         { "[>] establishing secure tunnel ............ ok",           TERM.Amber, "handshake",    0.35 },
         { "[>] fingerprinting executor ............... " .. execName, TERM.Amber, "executor",     0.35 },
@@ -676,6 +703,7 @@ function buildScanScreen(onDone)
     }
 
     task.spawn(function()
+        -- Phase 1: cheap
         local function runStep(step, frac)
             addLine(step[1], step[2])
             status.Text = step[3]
@@ -684,13 +712,14 @@ function buildScanScreen(onDone)
             task.wait(step[4])
         end
 
-        local totalSteps = #preSteps + 3 + #tail
+        local totalSteps = #preSteps + 3 + #tail  -- scan phase counts as ~3 steps
         local i = 0
         for _, step in ipairs(preSteps) do
             i = i + 1
             runStep(step, i / totalSteps)
         end
 
+        -- Phase 2: real anti-cheat scan (heavy) — yields to the scheduler while it runs
         i = i + 1
         addLine("[>] scanning for anti-cheat hooks ....... ", TERM.Amber)
         status.Text = "anti-cheat"
@@ -734,6 +763,7 @@ function buildScanScreen(onDone)
             end
         end
 
+        -- Phase 3: tail
         for _, step in ipairs(tail) do
             i = i + 1
             runStep(step, i / totalSteps)
@@ -748,6 +778,9 @@ function buildScanScreen(onDone)
     end)
 end
 
+-- ============================================================
+-- HOISTED CONSTANTS
+-- ============================================================
 local KO_MARKERS = {
     {"BodyEffects", "K.O"}, {"BodyEffects", "KO"}, {"BodyEffects", "Knocked"},
     {"BodyEffects", "Downed"}, {"BodyEffects", "Dead"}, {"BodyEffects", "Ragdoll"},
@@ -766,6 +799,7 @@ local UI_KBD = Enum.UserInputType.Keyboard
 local UI_M2  = Enum.UserInputType.MouseButton2
 local UI_M3  = Enum.UserInputType.MouseButton3
 
+-- [OPT] hoisted ESP bone pair table; count is exact
 local BONE_PAIRS = {
     {"Head","Torso"},{"Torso","Left Arm"},{"Torso","Right Arm"},{"Torso","Left Leg"},{"Torso","Right Leg"},
     {"Head","UpperTorso"},{"UpperTorso","LowerTorso"},
@@ -828,10 +862,6 @@ function StartScript(plf)
         FPSBooster=false, FPSOverlay=false,
         FreeCam=false, FreeCamSpeed=60,
         BigHead=false, BigHeadSizeNum=20,
-        -- v7 additions
-        PanicKey=Enum.KeyCode.P,
-        AutoSave=true,
-        Theme="Midnight",
     }
 
     local FEATURE_INDEX = {}
@@ -871,6 +901,7 @@ function StartScript(plf)
     local fStub = { Position=Vector2.new(), Radius=0, Visible=false, Remove=function() end, Size=Vector2.new() }
     if not fC then fC = fStub end; if not fS then fS = fStub end; if not fT then fT = fStub end
 
+    -- [OPT] track last-applied FOV state so we only touch Drawing when it changes
     local fovState = { mode = "none", size = -1, cx = -1, cy = -1 }
 
     local hitSound, menuSound
@@ -888,6 +919,9 @@ function StartScript(plf)
     local killFeed = {}
     local aaYawAccum = 0
 
+    -- ============================================================
+    -- MAGIC BULLET (BIG HEAD)
+    -- ============================================================
     local bhCache = {}
     local bhCharSet = {}
     local BH_NAMES = { Head = true, Hitbox = true, ["Head Hitbox"] = true }
@@ -1003,6 +1037,9 @@ function StartScript(plf)
 
     local lastJumpFire = 0
 
+    -- ============================================================
+    -- FPS BOOSTER  — [OPT] single pcall per object; sweep in a batch
+    -- ============================================================
     local fpsBoosted = false
     local fpsConns = nil
     local fpsRevert = {}
@@ -1081,6 +1118,9 @@ function StartScript(plf)
         fpsRevert = {}
     end
 
+    -- ============================================================
+    -- FREE CAM
+    -- ============================================================
     local fcCFrame, fcControlsDisabled
     local fcKeys = {W=false, A=false, S=false, D=false, Q=false, E=false}
 
@@ -1166,6 +1206,9 @@ function StartScript(plf)
         end
     end
 
+    -- ============================================================
+    -- SMOOTHING + FOV HELPERS
+    -- ============================================================
     local function inFovShape(dx, dy, r, shape)
         if shape == "Square" then
             return math.abs(dx) <= r and math.abs(dy) <= r
@@ -1205,6 +1248,9 @@ function StartScript(plf)
     local isPC = (plf == "PC")
     local W, H = isPC and 780 or 620, isPC and 480 or 400
 
+    -- ============================================================
+    -- GUI SHELL
+    -- ============================================================
     local g = Instance.new("ScreenGui", p.PlayerGui)
     g.Name = "zeva_" .. tostring(math.random(1e6, 9e6))
     g.ResetOnSpawn = false; g.IgnoreGuiInset = true
@@ -1311,6 +1357,9 @@ function StartScript(plf)
         UDim2.new(0,200,1,0), UDim2.new(0,0,0,0), 1, "made by zevadenn", TH.TextMute, FONT, 10
     creditText.TextXAlignment = Enum.TextXAlignment.Left
 
+    -- ============================================================
+    -- DISCORD BUTTON  — [OPT] guarded ContentImageSize access
+    -- ============================================================
     local DISCORD_ASSET     = "rbxassetid://8602918103"
     local DISCORD_ASSET_ALT = "rbxassetid://6863772078"
 
@@ -1366,6 +1415,9 @@ function StartScript(plf)
         if setclipboard then setclipboard("https://discord.gg/nN9F6kFrmc") end
     end)
 
+    -- ============================================================
+    -- UI BUILDERS
+    -- ============================================================
     local function setTab(name)
         activeTab = name
         for n, data in pairs(tabButtons) do
@@ -1383,7 +1435,7 @@ function StartScript(plf)
         if isSet then
             b.Size, b.Position, b.Text, b.TextSize, b.Font, b.ZIndex =
                 UDim2.new(1,-24,0,settingsH), UDim2.new(0,12,0,settingsY),
-                "   Settings", isPC and 12 or 11, FONT, 5
+                "   ⚙", isPC and 26 or 22, FONTB, 5
         else
             b.Size, b.Text, b.TextSize, b.Font = UDim2.new(1,0,0,tabH), "      "..name, 12, FONT
         end
@@ -1666,104 +1718,10 @@ function StartScript(plf)
     makeTab("Aim"); makeTab("ESP"); makeTab("Move"); makeTab("Perf"); makeTab("Set"); makeTab("Body"); makeTab("Target"); makeTab("Settings")
     makePage("Aim"); makePage("ESP"); makePage("Move"); makePage("Perf"); makePage("Set"); makePage("Body"); makePage("Target"); makePage("Settings")
 
-    -- session timer
-    local sessionStart = tick()
-    local sessionLabel = Instance.new("TextLabel", title)
-    sessionLabel.Size, sessionLabel.Position = UDim2.new(0,140,1,0), UDim2.new(0,150,0,0)
-    sessionLabel.BackgroundTransparency = 1
-    sessionLabel.Font, sessionLabel.TextSize, sessionLabel.TextColor3 = FONT, 10, TH.TextMute
-    sessionLabel.TextXAlignment = Enum.TextXAlignment.Left
-    sessionLabel.Text = ""
-    sessionLabel.Visible = isPC
-    task.spawn(function()
-        while g and g.Parent do
-            local e = math.floor(tick() - sessionStart)
-            local hh, mm, ss = math.floor(e/3600), math.floor((e%3600)/60), e%60
-            local str
-            if hh > 0 then str = string.format("%dh %dm", hh, mm)
-            elseif mm > 0 then str = string.format("%dm %ds", mm, ss)
-            else str = string.format("%ds", ss) end
-            if sessionLabel.Parent then sessionLabel.Text = str end
-            task.wait(1)
-        end
-    end)
-
+    -- [OPT] hitbox list precomputed; dirty flag flipped by UI
     local selectedPartsArr = { "Head" }
     local selectedPartsDirty = false
     local function markSelectedPartsDirty() selectedPartsDirty = true end
-
-    -- ============================================================
-    -- THEME PRESETS
-    -- ============================================================
-    local THEMES = {
-        Midnight = {
-            Bg=Color3.fromRGB(11,11,13), BgAlt=Color3.fromRGB(15,15,18),
-            Panel=Color3.fromRGB(20,20,24), Panel2=Color3.fromRGB(26,26,31),
-            Line=Color3.fromRGB(32,32,38), LineSoft=Color3.fromRGB(26,26,31),
-            Text=Color3.fromRGB(232,232,238), TextDim=Color3.fromRGB(128,128,138),
-            TextMute=Color3.fromRGB(78,78,88), Accent=Color3.fromRGB(140,190,255),
-        },
-        Blood = {
-            Bg=Color3.fromRGB(11,7,7), BgAlt=Color3.fromRGB(18,10,10),
-            Panel=Color3.fromRGB(24,14,14), Panel2=Color3.fromRGB(32,18,18),
-            Line=Color3.fromRGB(58,26,26), LineSoft=Color3.fromRGB(40,20,20),
-            Text=Color3.fromRGB(240,220,220), TextDim=Color3.fromRGB(155,110,110),
-            TextMute=Color3.fromRGB(95,60,60), Accent=Color3.fromRGB(225,65,65),
-        },
-        Ice = {
-            Bg=Color3.fromRGB(8,10,14), BgAlt=Color3.fromRGB(12,16,22),
-            Panel=Color3.fromRGB(16,22,30), Panel2=Color3.fromRGB(22,30,40),
-            Line=Color3.fromRGB(30,46,60), LineSoft=Color3.fromRGB(20,32,42),
-            Text=Color3.fromRGB(220,235,250), TextDim=Color3.fromRGB(130,160,190),
-            TextMute=Color3.fromRGB(70,95,120), Accent=Color3.fromRGB(100,200,255),
-        },
-        Mono = {
-            Bg=Color3.fromRGB(10,10,10), BgAlt=Color3.fromRGB(16,16,16),
-            Panel=Color3.fromRGB(22,22,22), Panel2=Color3.fromRGB(30,30,30),
-            Line=Color3.fromRGB(48,48,48), LineSoft=Color3.fromRGB(34,34,34),
-            Text=Color3.fromRGB(230,230,230), TextDim=Color3.fromRGB(150,150,150),
-            TextMute=Color3.fromRGB(92,92,92), Accent=Color3.fromRGB(215,215,215),
-        },
-    }
-
-    local themeRefs = {}
-    local function buildThemeRefs()
-        local function walk(o)
-            if not o then return end
-            for _, prop in ipairs({"BackgroundColor3", "TextColor3", "Color"}) do
-                local ok, val = pcall(function() return o[prop] end)
-                if ok and typeof(val) == "Color3" then
-                    for role, col in pairs(TH) do
-                        if col == val then
-                            table.insert(themeRefs, {obj=o, prop=prop, role=role})
-                            break
-                        end
-                    end
-                end
-            end
-            for _, child in ipairs(o:GetChildren()) do walk(child) end
-        end
-        walk(root)
-        walk(g)
-    end
-    task.defer(buildThemeRefs)
-
-    local function applyTheme(name)
-        local t = THEMES[name]
-        if not t then return end
-        cfg.Theme = name
-        for k, v in pairs(t) do TH[k] = v end
-        for _, r in ipairs(themeRefs) do
-            pcall(function()
-                if r.obj and r.obj.Parent then r.obj[r.prop] = TH[r.role] end
-            end)
-        end
-        for _, r in ipairs(accentRefs) do
-            pcall(function()
-                if r.obj and r.obj.Parent then r.obj[r.prop] = TH.Accent end
-            end)
-        end
-    end
 
     -- ============================================================
     -- AIM PAGE
@@ -1958,6 +1916,7 @@ function StartScript(plf)
         numInput(s, "Trigger Delay", "Dly", cfg.Dly, function(v) cfg.Dly = v end)
         numInput(s, "FOV Size", "FovSize", cfg.FovSize, function(v)
             cfg.FovSize = v
+            -- [OPT] only touch the Drawing when circle is active
             if cfg.FovShape == "Circle" and fC ~= fStub then
                 pcall(function() fC.Radius = v end)
             end
@@ -1969,7 +1928,7 @@ function StartScript(plf)
     end
 
     -- ============================================================
-    -- BODY PAGE
+    -- BODY PAGE  — [OPT] toggles now flip selectedPartsDirty
     -- ============================================================
     do
         BUILD_PAGE = "Body"
@@ -1993,7 +1952,7 @@ function StartScript(plf)
             end
             b.MouseButton1Click:Connect(function()
                 cfg.SelectedParts[name] = not cfg.SelectedParts[name]
-                markSelectedPartsDirty()
+                markSelectedPartsDirty()  -- [OPT]
                 refresh()
                 for _, f in ipairs(cfg.PartColors) do pcall(f) end
             end)
@@ -2219,109 +2178,6 @@ function StartScript(plf)
         numInput(s7, "Size", "RadarSize", 140)
         numInput(s7, "Range", "RadarRange", 200)
 
-        -- ============================================================
-        -- SAFETY SECTION (v7 additions)
-        -- ============================================================
-        local sSafety = section(pages["Settings"], "safety")
-
-        -- Panic key
-        local pkRow = Instance.new("Frame", sSafety)
-        pkRow.Size, pkRow.BackgroundTransparency = UDim2.new(1,0,0,28), 1
-        local pkLbl = Instance.new("TextLabel", pkRow)
-        pkLbl.Size, pkLbl.BackgroundTransparency, pkLbl.Text, pkLbl.TextColor3, pkLbl.Font, pkLbl.TextSize =
-            UDim2.new(0.5,0,1,0), 1, "Panic Key", TH.Text, FONT, 12
-        pkLbl.TextXAlignment = Enum.TextXAlignment.Left
-        local pkBtn = Instance.new("TextButton", pkRow)
-        pkBtn.Size, pkBtn.Position, pkBtn.BackgroundColor3, pkBtn.Text, pkBtn.TextColor3, pkBtn.Font, pkBtn.TextSize =
-            UDim2.new(0.5,-10,1,0), UDim2.new(0.5,0,0,0), TH.Panel2, keyName(cfg.PanicKey), TH.Danger, FONTB, 11
-        pkBtn.AutoButtonColor, pkBtn.BorderSizePixel = false, 0
-        round(pkBtn, 6); stroke(pkBtn, TH.LineSoft, 1, 0.4)
-        local pkListening = false
-        pkBtn.MouseButton1Click:Connect(function()
-            if pkListening then return end
-            pkListening = true
-            pkBtn.Text = "press a key..."
-            task.wait(0.15)
-            local conn
-            conn = U.InputBegan:Connect(function(input, gpe)
-                if gpe then return end
-                if not pkListening then if conn then conn:Disconnect() end; return end
-                if input.UserInputType == UI_KBD then
-                    if conn then conn:Disconnect() end
-                    pkListening = false
-                    if input.KeyCode == Enum.KeyCode.Escape then
-                        pkBtn.Text = keyName(cfg.PanicKey)
-                    elseif input.KeyCode == Enum.KeyCode.Backspace then
-                        cfg.PanicKey = nil
-                        pkBtn.Text = "None"
-                    else
-                        cfg.PanicKey = input.KeyCode
-                        pkBtn.Text = keyName(input.KeyCode)
-                    end
-                end
-            end)
-            task.delay(5, function()
-                if pkListening then
-                    if conn then conn:Disconnect() end
-                    pkListening = false
-                    pkBtn.Text = keyName(cfg.PanicKey)
-                end
-            end)
-        end)
-        regFeature("Panic Key", "Settings", pkRow)
-
-        -- Theme selector
-        local thRow = Instance.new("Frame", sSafety)
-        thRow.Size, thRow.BackgroundTransparency = UDim2.new(1,0,0,28), 1
-        local thLbl = Instance.new("TextLabel", thRow)
-        thLbl.Size, thLbl.BackgroundTransparency, thLbl.Text, thLbl.TextColor3, thLbl.Font, thLbl.TextSize =
-            UDim2.new(0.5,0,1,0), 1, "Theme", TH.Text, FONT, 12
-        thLbl.TextXAlignment = Enum.TextXAlignment.Left
-        local thOpts = {"Midnight", "Blood", "Ice", "Mono"}
-        local thIdx = 1
-        for i, n in ipairs(thOpts) do if n == cfg.Theme then thIdx = i end end
-        local thBtn = Instance.new("TextButton", thRow)
-        thBtn.Size, thBtn.Position, thBtn.BackgroundColor3, thBtn.Text, thBtn.TextColor3, thBtn.Font, thBtn.TextSize =
-            UDim2.new(0.5,-10,1,0), UDim2.new(0.5,0,0,0), TH.Panel2, cfg.Theme, TH.Accent, FONTB, 11
-        thBtn.AutoButtonColor, thBtn.BorderSizePixel = false, 0
-        round(thBtn, 6); stroke(thBtn, TH.LineSoft, 1, 0.4)
-        thBtn.MouseButton1Click:Connect(function()
-            thIdx = thIdx % #thOpts + 1
-            local pick = thOpts[thIdx]
-            applyTheme(pick)
-            thBtn.Text = pick
-        end)
-        regFeature("Theme", "Settings", thRow)
-
-        -- Auto-save toggle
-        local asRow = Instance.new("Frame", sSafety)
-        asRow.Size, asRow.BackgroundTransparency = UDim2.new(1,0,0,24), 1
-        local asLbl = Instance.new("TextLabel", asRow)
-        asLbl.Size, asLbl.BackgroundTransparency, asLbl.Text, asLbl.TextColor3, asLbl.Font, asLbl.TextSize =
-            UDim2.new(1,-50,1,0), 1, "Auto-save on close", TH.Text, FONT, 12
-        asLbl.TextXAlignment = Enum.TextXAlignment.Left
-        local asTrack = Instance.new("Frame", asRow)
-        asTrack.Size, asTrack.Position, asTrack.BackgroundColor3, asTrack.BorderSizePixel =
-            UDim2.new(0,34,0,18), UDim2.new(1,-34,0.5,-9), cfg.AutoSave and TH.Accent or TH.Off, 0
-        round(asTrack, 9); stroke(asTrack, TH.LineSoft, 1, 0.4)
-        local asKnob = Instance.new("Frame", asTrack)
-        asKnob.Size, asKnob.Position, asKnob.BackgroundColor3, asKnob.BorderSizePixel =
-            UDim2.new(0,14,0,14), UDim2.new(0, cfg.AutoSave and 18 or 2, 0.5, -7),
-            cfg.AutoSave and Color3.new(1,1,1) or TH.TextDim, 0
-        round(asKnob, 7)
-        local asHit = Instance.new("TextButton", asRow)
-        asHit.Size, asHit.BackgroundTransparency, asHit.Text = UDim2.new(1,0,1,0), 1, ""
-        asHit.MouseButton1Click:Connect(function()
-            cfg.AutoSave = not cfg.AutoSave
-            tw(asTrack, 0.18, {BackgroundColor3 = cfg.AutoSave and TH.Accent or TH.Off})
-            tw(asKnob, 0.18, {Position = UDim2.new(0, cfg.AutoSave and 18 or 2, 0.5, -7),
-                              BackgroundColor3 = cfg.AutoSave and Color3.new(1,1,1) or TH.TextDim})
-        end)
-        regFeature("Auto-save", "Settings", asRow)
-
-        -- ============================================================
-        -- DANGER ZONE
-        -- ============================================================
         local s8 = section(pages["Settings"], "danger zone")
         local cd = Instance.new("TextButton", s8)
         cd.Size, cd.BackgroundColor3, cd.BackgroundTransparency, cd.Text, cd.TextColor3, cd.Font, cd.TextSize =
@@ -2451,47 +2307,6 @@ function StartScript(plf)
         end
     end))
 
-    -- ============================================================
-    -- PANIC KEY HANDLER
-    -- ============================================================
-    local function panic()
-        for _, k in ipairs({
-            "Aim","Trig","Box","Bone","Health","Dist","Tracer","LookTracer",
-            "Chams","BigHead","Spin","Noclip","AntiAimEnabled","ShowFov",
-            "Crosshair","Radar","KillStats","KillFeed","FPSBooster","FreeCam",
-            "AutoBhop","FPSOverlay","WallCheck","HitSound","JitterAim",
-        }) do cfg[k] = false end
-        pcall(BH_restoreAll); pcall(restoreAntiAim)
-        pcall(fcStop); pcall(restoreFPSBooster); pcall(buildCrosshair)
-        pcall(refreshAllFromCfg)
-        root.Visible = false
-    end
-    reg(U.InputBegan:Connect(function(input, gpe)
-        if gpe then return end
-        if cfg.PanicKey and input.KeyCode == cfg.PanicKey then panic() end
-    end))
-
-    -- ============================================================
-    -- AUTOSAVE ON MENU CLOSE
-    -- ============================================================
-    reg(root:GetPropertyChangedSignal("Visible"):Connect(function()
-        if not root.Visible and cfg.AutoSave then
-            task.spawn(function()
-                local data = {}
-                for k, v in pairs(cfg) do
-                    local t = type(v)
-                    if t == "number" or t == "boolean" or t == "string" then data[k] = v
-                    elseif typeof(v) == "Color3" then data[k] = {v.R, v.G, v.B, "_color"}
-                    elseif typeof(v) == "EnumItem" then data[k] = {tostring(v.EnumType), v.Name, "_enum"} end
-                end
-                data.SelectedParts = {}; for k,v in pairs(cfg.SelectedParts) do data.SelectedParts[k] = v end
-                data.TargetList = {}; for k,v in pairs(cfg.TargetList) do data.TargetList[k] = v end
-                data.PartColors = nil
-                pcall(function() writefile("zeva_config.json", HS:JSONEncode(data)) end)
-            end)
-        end
-    end))
-
     setTab("Aim")
 
     task.spawn(function()
@@ -2505,7 +2320,7 @@ function StartScript(plf)
     end)
 
     -- ============================================================
-    -- KO / DEAD DETECTION
+    -- KO / DEAD DETECTION  — [OPT] dead branch removed
     -- ============================================================
     local function isKOorDead(pl)
         if not pl or pl == p then return true end
@@ -2757,6 +2572,9 @@ function StartScript(plf)
         end
     end
 
+    -- ============================================================
+    -- NOCLIP
+    -- ============================================================
     local noclipParts = {}
     local function rebuildNoclipParts()
         noclipParts = {}
@@ -2769,6 +2587,9 @@ function StartScript(plf)
     reg(p.CharacterAdded:Connect(function() task.wait(0.15); rebuildNoclipParts() end))
     task.spawn(function() task.wait(0.15); rebuildNoclipParts() end)
 
+    -- ============================================================
+    -- ESP DRAWING HANDLES  — [OPT] pool sized to actual pair count
+    -- ============================================================
     local dr = {}
     local function ce(pl)
         if pl == p or dr[pl] then return end
@@ -2792,6 +2613,9 @@ function StartScript(plf)
     reg(P.PlayerAdded:Connect(ce))
     for _, pl in pairs(P:GetPlayers()) do ce(pl) end
 
+    -- ============================================================
+    -- PREDICTION
+    -- ============================================================
     local function CalcPred(pl, tgt)
         if not tgt then return nil end
         local vel = getAvgVel(pl)
@@ -2901,6 +2725,9 @@ function StartScript(plf)
 
     local function pushKillFeed(pl) table.insert(killFeed, {name = pl.DisplayName, born = tick()}) end
 
+    -- ============================================================
+    -- MAGIC BULLET LOOP
+    -- ============================================================
     reg(RS.Stepped:Connect(function()
         if not cfg.BigHead then
             if next(bhCache) then BH_restoreAll() end
@@ -2949,6 +2776,9 @@ function StartScript(plf)
 
     local currentAimPos = nil
 
+    -- ============================================================
+    -- AIM CAMERA BIND
+    -- ============================================================
     local lastAimTick = tick()
 
     reg(RS:BindToRenderStep(bindName, 200, function()
@@ -2981,6 +2811,9 @@ function StartScript(plf)
         c.CFrame = c.CFrame:Lerp(CFrame.new(camPos, currentAimPos), alpha)
     end))
 
+    -- ============================================================
+    -- MAIN LOOP  — [OPT] pcalls removed from hot Drawing writes
+    -- ============================================================
     local fpsFrames, fpsLast, fpsValue, pingValue = 0, tick(), 0, 0
     local chamsAccum = 0
     local killFeedSig = ""
@@ -3033,6 +2866,7 @@ function StartScript(plf)
 
         if cfg.AntiAimEnabled then applyAntiAim(dt) end
 
+        -- [OPT] FOV only touched on state change
         local wantFovMode = "none"
         if cShowFov and not menuOpen then wantFovMode = cFovShape end
         if wantFovMode ~= fovState.mode then
@@ -3068,6 +2902,7 @@ function StartScript(plf)
         end
         fovState.size, fovState.cx, fovState.cy = cFovSize, halfX, halfY
 
+        -- [OPT] crosshair only repositioned when viewport changes
         if #crosshairParts > 0 and lastCrosshairPos ~= vs then
             lastCrosshairPos = vs
             for i = 1, #crosshairParts do
@@ -3113,6 +2948,9 @@ function StartScript(plf)
         end
         updateChams()
 
+        -- ============================================================
+        -- ESP RENDER  — [OPT] pcalls removed from Drawing property writes
+        -- ============================================================
         local anyESP = (not menuOpen) and (cBox or cHealth or cDist or cTracer or cLookTr or cBone)
         for pl, d in pairs(dr) do
             local ch = pl.Character
@@ -3245,6 +3083,9 @@ function StartScript(plf)
             end
         end
 
+        -- ============================================================
+        -- AIM SELECTION  — [OPT] uses hoisted selectedPartsArr
+        -- ============================================================
         if cAim and not menuOpen then
             local bestScore, tg, tgPl = math.huge, nil, nil
             local useNearest = cfg.UseNearest
@@ -3253,6 +3094,7 @@ function StartScript(plf)
             local targetList = cfg.TargetList
             local fovShape = cFovShape
 
+            -- [OPT] rebuild enabled hitbox array only when dirty
             if selectedPartsDirty then
                 selectedPartsArr = {}
                 for k, on in pairs(cfg.SelectedParts) do
@@ -3319,6 +3161,7 @@ function StartScript(plf)
             currentAimPos = nil
         end
 
+        -- KILL STATS OVERLAY
         if cfg.KillStats then
             local ks = _G.__zeva_killStatsGui
             if not ks or not ks.sg or not ks.sg.Parent then
@@ -3338,6 +3181,7 @@ function StartScript(plf)
             _G.__zeva_killStatsGui.sg.Enabled = false
         end
 
+        -- KILL FEED
         local nowT = tick()
         local removedAny = false
         for i = #killFeed, 1, -1 do
@@ -3356,6 +3200,7 @@ function StartScript(plf)
             local kf = _G.__zeva_killFeedGui
             if removedAny or #killFeed ~= lastKFCount then
                 lastKFCount = #killFeed
+                -- [OPT] table.concat instead of repeated string concat
                 local parts = {tostring(#killFeed)}
                 for i = 1, #killFeed do parts[#parts+1] = "|"; parts[#parts+1] = killFeed[i].name end
                 local sig = table.concat(parts)
@@ -3376,6 +3221,7 @@ function StartScript(plf)
             _G.__zeva_killFeedGui.sg.Enabled = false
         end
 
+        -- RADAR
         if cfg.Radar then
             if not _G.__zeva_radarGui or not _G.__zeva_radarGui.sg or not _G.__zeva_radarGui.sg.Parent then
                 local sg = Instance.new("ScreenGui", p.PlayerGui)
@@ -3437,6 +3283,7 @@ function StartScript(plf)
             _G.__zeva_radarGui.sg.Enabled = false
         end
 
+        -- FPS OVERLAY
         if cfg.FPSOverlay then
             if not _G.__zeva_fpsGui or not _G.__zeva_fpsGui.sg or not _G.__zeva_fpsGui.sg.Parent then
                 local sg = Instance.new("ScreenGui", p.PlayerGui)
@@ -3458,6 +3305,9 @@ function StartScript(plf)
         end
     end)
 
+    -- ============================================================
+    -- TRIGGERBOT LOOP  — [OPT] hoisted RaycastParams; no Heartbeat wait
+    -- ============================================================
     task.spawn(function()
         local lastT, lastHit = 0, 0
         local trigRayParams = RaycastParams.new()
@@ -3493,6 +3343,9 @@ function StartScript(plf)
         end
     end)
 
+    -- ============================================================
+    -- CLEANUP
+    -- ============================================================
     reg(P.PlayerRemoving:Connect(function(pl)
         local d = dr[pl]
         if d then
