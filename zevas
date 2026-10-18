@@ -1,5 +1,5 @@
 -- ============================================================
--- Zeva v8.2.0 — patched build (mobile hamburger + per-feature keybinds)
+-- Zeva v8.2.0 — patched build
 -- ============================================================
 -- [C] fixes + additions applied:
 --   PointA/PointB on all Drawing Lines
@@ -16,8 +16,10 @@
 --   performSearch uses canvas-relative math + clamp
 --   bh_valid gated on cfg.TeamCheck
 --   mobile opB = v6.9.10 flat hamburger, always visible
---   NEW: Aimlock keybind + toggle-mode + double-click Auto (PC only)
---   NEW: Magic Bullet keybind + toggle-mode + double-click Auto (PC only)
+--   Aimlock keybind + toggle-mode + double-click Auto (PC only)
+--   Magic Bullet keybind + toggle-mode + double-click Auto (PC only)
+--   hint label truncated, hidden on mobile, no search-bar collision
+--   change device -> device picker (no passkey re-entry), session carried
 -- ============================================================
 
 -- ============================================================
@@ -316,7 +318,7 @@ end
 local KEY_WHITELIST = {
     ["zevadenganteng"] = { "zevadenalt" },
     ["ardananjing"]    = { "andymunoz" },
-    ["48-3XYU"] = {"banbattlesspeedrun67"},
+    ["48-3XYU"] = {" "},
 }
 local function keyName(k)
     if k == nil then return "None" end
@@ -834,6 +836,73 @@ function buildScanScreen(onDone)
     end)
 end
 
+-- ============================================================
+-- DEVICE PICKER (change device, no passkey)
+-- ============================================================
+function buildDevicePicker()
+    clearSelectors()
+    local chG = Instance.new("ScreenGui", p.PlayerGui)
+    chG.Name = "zeva_sel_" .. tostring(math.random(1e6, 9e6))
+    chG.ResetOnSpawn = false; chG.IgnoreGuiInset = true; chG.DisplayOrder = 100
+
+    local outer, body, s = termWindow(chG, "/dev/zeva --switch", 440, 200)
+
+    local pad = Instance.new("UIPadding", body)
+    pad.PaddingLeft = UDim.new(0, 18); pad.PaddingRight = UDim.new(0, 18)
+    pad.PaddingTop  = UDim.new(0, 16); pad.PaddingBottom = UDim.new(0, 14)
+
+    local function line(txt, col, size, y)
+        local l = Instance.new("TextLabel", body)
+        l.BackgroundTransparency = 1
+        l.Font = MONO; l.TextSize = size or 13
+        l.TextColor3 = col or TERM.Amber
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.Position = UDim2.new(0, 0, 0, y)
+        l.Size = UDim2.new(1, 0, 0, (size or 13) + 4)
+        l.Text = txt
+        l.ZIndex = 2
+        return l
+    end
+
+    line("session: " .. tostring(_G.__zeva_sessionKey or "?"), TERM.Dim, 11, 0)
+    line("current: " .. tostring(currentPlatform), TERM.Dim, 11, 16)
+    line("switch to:", TERM.Hi, 13, 44)
+
+    local function mkBtn(txt, x, y, w, targetPlatform)
+        local b = Instance.new("TextButton", body)
+        b.BackgroundTransparency = 1
+        b.Font = MONO; b.TextSize = 13; b.TextColor3 = TERM.Amber
+        b.Text = txt
+        b.TextXAlignment = Enum.TextXAlignment.Left
+        b.Position = UDim2.new(0, x, 0, y)
+        b.Size = UDim2.new(0, w, 0, 22)
+        b.AutoButtonColor = false
+        b.ZIndex = 2
+        b.MouseEnter:Connect(function()
+            tw(b, EASE.fast, {TextColor3 = TERM.Hi})
+            tw(b, EASE.fast, {Position = UDim2.new(0, x + 6, 0, y)})
+        end)
+        b.MouseLeave:Connect(function()
+            tw(b, EASE.fast, {TextColor3 = TERM.Amber})
+            tw(b, EASE.fast, {Position = UDim2.new(0, x, 0, y)})
+        end)
+        b.MouseButton1Click:Connect(function()
+            currentPlatform = targetPlatform
+            _G.__zeva_sessionPlatform = targetPlatform
+            s.Color = TERM.Green
+            task.wait(0.15)
+            chG:Destroy()
+            StartScript(targetPlatform)
+        end)
+        return b
+    end
+
+    mkBtn("  [1] pc",     0,   72, 140, "PC")
+    mkBtn("  [2] mobile", 150, 72, 160, "Mobile")
+
+    line("> no key needed — key already verified", TERM.Dim, 11, 108)
+end
+
 -- HOISTED CONSTANTS
 local KO_MARKERS = {
     {"BodyEffects", "K.O"}, {"BodyEffects", "KO"}, {"BodyEffects", "Knocked"},
@@ -1227,7 +1296,6 @@ function StartScript(plf)
         end
     end
 
-    -- SMOOTHING
     local function inFovShape(dx, dy, r, shape)
         if shape == "Square" then return math.abs(dx) <= r and math.abs(dy) <= r
         elseif shape == "Triangle" then
@@ -1367,10 +1435,12 @@ function StartScript(plf)
     local hintText = Instance.new("TextLabel", title)
     hintText.Size, hintText.Position, hintText.BackgroundTransparency, hintText.Text,
         hintText.TextColor3, hintText.Font, hintText.TextSize =
-        UDim2.new(0, 200, 1, 0), UDim2.new(1, -400, 0, 0), 1,
+        UDim2.new(0, 170, 1, 0), UDim2.new(1, -380, 0, 0), 1,
         safeKeyLabel(cfg.HideKey),
         TH.TextMute, FONTL, 10
     hintText.TextXAlignment = Enum.TextXAlignment.Right
+    hintText.TextTruncate = Enum.TextTruncate.AtEnd
+    hintText.Visible = isPC
     hintText.ZIndex = 5
 
     local function setHintKey(k)
@@ -2303,7 +2373,6 @@ function StartScript(plf)
         return sw
     end
 
-    -- title drag
     do
         local dragging, ds, sp
         title.InputBegan:Connect(function(i)
@@ -2342,7 +2411,6 @@ function StartScript(plf)
             end
         end))
     else
-        -- mobile: v6.9.10 flat hamburger, always visible so menu can always be closed
         local opB = Instance.new("TextButton", g)
         opB.Size, opB.Position, opB.BackgroundColor3, opB.Text =
             UDim2.new(0,50,0,50), UDim2.new(0,20,0.5,-25), TH.Panel, ""
@@ -2959,7 +3027,7 @@ function StartScript(plf)
             task.wait(0.14)
             teardown()
             task.wait(0.05)
-            buildSelector()
+            buildDevicePicker()
         end)
     end
 
@@ -3443,7 +3511,6 @@ function StartScript(plf)
     end
     local function pushKillFeed(pl) table.insert(killFeed, {name = pl.DisplayName, born = tick()}) end
 
-    -- MAGIC BULLET LOOP (honors BigHeadKey hold/toggle on PC; Auto mode when nil)
     reg(RS.Stepped:Connect(function()
         local active = cfg.BigHead
         if isPC and cfg.BigHeadKey ~= nil and not cfg.BigHeadHeld then
@@ -3506,7 +3573,6 @@ function StartScript(plf)
         c.CFrame = c.CFrame:Lerp(CFrame.new(camPos, currentAimPos), alpha)
     end))
 
-    -- MAIN LOOP
     local fpsFrames, fpsLast, fpsValue, pingValue = 0, tick(), 0, 0
     local chamsAccum = 0
     local killFeedSig = ""
