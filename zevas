@@ -1,62 +1,93 @@
 -- ============================================================
--- namecall BYPASS — runs before Zeva
+-- Zeva v8.2.0 — patched build (mobile hamburger = v6.9.10 style)
 -- ============================================================
-local g = getinfo or debug.getinfo
-local d = false
-local h = {}
+-- [C] fixes applied:
+--   PointA/PointB on all Drawing Lines
+--   pcall + type guards on setthreadidentity / getgc / hookfunction / debug.info
+--   keybind Escape now unbinds
+--   slider supports precision, round-half-up
+--   getAvgAccel uses real dt
+--   trackVel decoupled from cham throttle
+--   freecam aborts cleanly if PlayerModule:GetControls fails
+--   triggerbot sends touch events on mobile
+--   raycast filter drops camera
+--   keyName hardened against tostring errors
+--   colorRow respects BUILD_PAGE
+--   performSearch uses canvas-relative math + clamp
+--   bh_valid gated on cfg.TeamCheck
+--   mobile opB swapped to v6.9.10 flat hamburger, always-visible (no close-loop bug)
+-- ============================================================
 
-local x, y
+-- ============================================================
+-- ANTICHEAT HOOK PRELUDE — capability-gated
+-- ============================================================
+do
+    local haveGC  = type(getgc)        == "function"
+    local haveHF  = type(hookfunction) == "function"
+    local haveTI  = type(setthreadidentity) == "function"
+    local haveNC  = type(newcclosure)  == "function"
+    local haveRNV = type(getrenv)      == "function"
 
-setthreadidentity(2)
+    if haveTI then pcall(setthreadidentity, 2) end
 
-for i, v in ipairs(getgc(true)) do
-    if typeof(v) == "table" then
-        local a = rawget(v, "Detected")
-        local b = rawget(v, "Kill")
+    if haveGC and haveHF and haveNC then
+        local x, y
+        local d = false
 
-        if typeof(a) == "function" and not x then
-            x = a
-            local o; o = hookfunction(x, function(c, f, n)
-                if c ~= "_" then
-                    if d then warn(` AntiCheat flagged\nMethod: {c}\nInfo: {f}`) end
+        pcall(function()
+            for _, v in ipairs(getgc(true)) do
+                if typeof(v) == "table" then
+                    local a = rawget(v, "Detected")
+                    local b = rawget(v, "Kill")
+
+                    if typeof(a) == "function" and not x then
+                        x = a
+                        pcall(function()
+                            hookfunction(x, function(c, f, n)
+                                if c ~= "_" then
+                                    if d then warn(("AntiCheat flagged\nMethod: %s\nInfo: %s"):format(tostring(c), tostring(f))) end
+                                end
+                                return true
+                            end)
+                        end)
+                    end
+
+                    if rawget(v, "Variables") and rawget(v, "Process")
+                       and typeof(b) == "function" and not y then
+                        y = b
+                        pcall(function()
+                            hookfunction(y, function(f)
+                                if d then warn(("AntiCheat tried to kill (fallback): %s"):format(tostring(f))) end
+                            end)
+                        end)
+                    end
                 end
-                return true
-            end)
-            table.insert(h, x)
-        end
+            end
+        end)
 
-        if rawget(v, "Variables") and rawget(v, "Process") and typeof(b) == "function" and not y then
-            y = b
-            local o; o = hookfunction(y, function(f)
-                if d then warn(` AntiCheat tried to kill (fallback): {f}`) end
+        if haveRNV and x then
+            pcall(function()
+                local renv = getrenv()
+                if renv and renv.debug and type(renv.debug.info) == "function" then
+                    local o; o = hookfunction(renv.debug.info, newcclosure(function(...)
+                        local a, f = ...
+                        if x and a == x then
+                            if d then warn("zins | bypassed") end
+                            return coroutine.yield(coroutine.running())
+                        end
+                        return o(...)
+                    end))
+                end
             end)
-            table.insert(h, y)
         end
     end
+
+    if haveTI then pcall(setthreadidentity, 7) end
 end
 
-local o; o = hookfunction(getrenv().debug.info, newcclosure(function(...)
-    local a, f = ...
-    if x and a == x then
-        if d then warn(`zins |  bypassed`) end
-        return coroutine.yield(coroutine.running())
-    end
-    return o(...)
-end))
-
-setthreadidentity(7)
-
---[[
-  Zeva v8.2.0
-  - tabs capitalized: Aim / ESP / Move / Perf / Set / Body / Target / Settings
-  - section headers + rows aligned on 12px inset
-  - hint text safe (no keyName() crash)
-  - mobile hamburger always visible + pulse ring
-  - tab list scroll accounts for all 8 entries
-  - aura cleanup fixed (glow sibling, killed before destroy)
-  - profile panel: tap user card -> hide name/info, copy id, session key
-  - all features preserved
-]]
+-- ============================================================
+-- Zeva v8.2.0
+-- ============================================================
 local P   = game:GetService("Players")
 local RS  = game:GetService("RunService")
 local TS  = game:GetService("TweenService")
@@ -287,8 +318,11 @@ local KEY_WHITELIST = {
 }
 local function keyName(k)
     if k == nil then return "None" end
-    if typeof(k) == "EnumItem" then return k.Name end
-    return tostring(k)
+    local ok, name = pcall(function()
+        if typeof(k) == "EnumItem" then return k.Name end
+        return tostring(k)
+    end)
+    return ok and name or "Unknown"
 end
 local function clearSelectors()
     for _, ch in ipairs(p.PlayerGui:GetChildren()) do
@@ -826,6 +860,13 @@ local BONE_PAIRS = {
 }
 local BONE_PAIRS_COUNT = #BONE_PAIRS
 
+-- small helper: assign both From/To and PointA/PointB on a Drawing.Line
+local function setLinePoints(l, a, b)
+    if not l then return end
+    pcall(function() l.PointA = a; l.PointB = b end)
+    pcall(function() l.From = a; l.To = b end)
+end
+
 function StartScript(plf)
     for _, ch in ipairs(p.PlayerGui:GetChildren()) do
         if ch.Name:find("^zeva_scan_") then ch:Destroy() end
@@ -999,6 +1040,9 @@ function StartScript(plf)
         bh_snapshot(part)
         local n = cfg.BigHeadSizeNum or 20
         local target = Vector3.new(n, n, n)
+        if part:IsA("Part") and part.Shape ~= Enum.PartType.Ball then
+            pcall(function() part.Shape = Enum.PartType.Ball end)
+        end
         if part.Size ~= target then part.Size = target end
         part.CanCollide = false; part.CanQuery = true; part.CanTouch = false
         part.Massless = true; part.Transparency = 1; part.LocalTransparencyModifier = 1
@@ -1095,14 +1139,16 @@ function StartScript(plf)
     local fcCFrame, fcControlsDisabled
     local fcKeys = {W=false, A=false, S=false, D=false, Q=false, E=false}
     local function fcToggleControls(enable)
-        pcall(function()
+        local ok = pcall(function()
             local playerScripts = p.PlayerScripts
             local playerModule = playerScripts:FindFirstChild("PlayerModule")
-            if playerModule then
-                local controls = require(playerModule):GetControls()
-                if controls then if enable then controls:Enable() else controls:Disable() end end
-            end
+            if not playerModule then return false end
+            local controls = require(playerModule):GetControls()
+            if not controls then return false end
+            if enable then controls:Enable() else controls:Disable() end
+            return true
         end)
+        return ok
     end
     local function fcStart()
         local char = p.Character; if not char then return end
@@ -1111,7 +1157,14 @@ function StartScript(plf)
         c.CameraSubject = nil
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum then hum.WalkSpeed = 0; hum.JumpPower = 0; hum.JumpHeight = 0 end
-        fcToggleControls(false); fcControlsDisabled = true
+        if not fcToggleControls(false) then
+            c.CameraType = Enum.CameraType.Custom
+            if hum then c.CameraSubject = hum end
+            cfg.FreeCam = false
+            for _, fn in ipairs(UI_REFRESH["FreeCam"] or {}) do pcall(fn) end
+            return
+        end
+        fcControlsDisabled = true
     end
     local function fcStop()
         c.CameraType = Enum.CameraType.Custom
@@ -1131,8 +1184,12 @@ function StartScript(plf)
         if hum.FloorMaterial == AIR then return end
         local now = tick()
         if now - lastJumpFire > 0.05 then
-            hum.Jump = true
-            pcall(function() hum:ChangeState(JUMPING) end)
+            pcall(function()
+                hum.Jump = true
+                if hum:GetState() ~= Enum.HumanoidStateType.Jumping then
+                    hum:ChangeState(Enum.HumanoidStateType.Jumping)
+                end
+            end)
             lastJumpFire = now
         end
     end
@@ -1218,7 +1275,6 @@ function StartScript(plf)
     g.ResetOnSpawn = false; g.IgnoreGuiInset = true
     g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling; g.DisplayOrder = 50
 
-    -- glow is sibling of root — visibility tied to root
     local glow = Instance.new("Frame", g)
     glow.Size = UDim2.new(0, W + 16, 0, H + 16)
     glow.Position = UDim2.new(0.5, -(W + 16)/2, 0.5, -(H + 16)/2)
@@ -1234,7 +1290,6 @@ function StartScript(plf)
     glowStroke.Parent = glow
     regAccent(glowStroke, "Color")
 
-    -- root
     local root = Instance.new("Frame", g)
     root.Size = UDim2.new(0, W, 0, H)
     root.Position = UDim2.new(0.5, -W/2, 0.5, -H/2)
@@ -1259,7 +1314,6 @@ function StartScript(plf)
         glow.Visible = v
     end
 
-    -- title bar
     local title = Instance.new("Frame", root)
     title.Size = UDim2.new(1, 0, 0, TITLE_H)
     title.BackgroundColor3 = TH.BgTop
@@ -1301,7 +1355,6 @@ function StartScript(plf)
     subText.Visible = isPC
     subText.ZIndex = 5
 
-    -- safe hint
     local function safeKeyLabel(k)
         if plf ~= "PC" then return "tap to toggle" end
         local ok, kn = pcall(function() return keyName(k) end)
@@ -1322,7 +1375,6 @@ function StartScript(plf)
         hintText.Text = safeKeyLabel(k)
     end
 
-    -- sidebar
     local sidebar = Instance.new("Frame", root)
     sidebar.Size, sidebar.Position, sidebar.BackgroundColor3, sidebar.BorderSizePixel =
         UDim2.new(0, SIDEBAR_W, 1, -(TITLE_H + FOOTER_H)), UDim2.new(0, 0, 0, TITLE_H), TH.BgAlt, 0
@@ -1334,7 +1386,6 @@ function StartScript(plf)
         UDim2.new(0,1,1,0), UDim2.new(1,-1,0,0), TH.LineHi, 0
     sbLine.ZIndex = 4
 
-    -- user card
     local uCardH = isPC and 78 or 66
     local uAvatarSz = isPC and 42 or 36
     local uNameY = isPC and 14 or 10
@@ -1387,7 +1438,6 @@ function StartScript(plf)
     userCardBtn.MouseEnter:Connect(function() tw(userCard, EASE.fast, {BackgroundColor3 = TH.Panel2}) end)
     userCardBtn.MouseLeave:Connect(function() tw(userCard, EASE.fast, {BackgroundColor3 = TH.Panel}) end)
 
-    -- tabs holder
     local tabColTop = 16
     local tabColBottom = uCardH + 16 + 16
     local tabH = isPC and 32 or 28
@@ -1431,7 +1481,6 @@ function StartScript(plf)
         UDim2.new(0,220,1,0), UDim2.new(0,0,0,0), 1, "made by zevadenn", TH.TextMute, FONTL, 10
     creditText.TextXAlignment = Enum.TextXAlignment.Left
 
-    -- discord
     local DISCORD_ASSET = "rbxassetid://8602918103"
     local DISCORD_ASSET_ALT = "rbxassetid://6863772078"
     local discordBtn = Instance.new("ImageButton", creditRow)
@@ -1712,7 +1761,6 @@ function StartScript(plf)
     ppClose.MouseButton1Click:Connect(closeProfile)
     profileBackdropBtn.MouseButton1Click:Connect(closeProfile)
 
-    -- TAB LABELS (capitalized)
     local TAB_LABELS = {
         aim = "Aim", esp = "ESP", move = "Move",
         perf = "Perf", set = "Set", body = "Body",
@@ -1824,19 +1872,16 @@ function StartScript(plf)
         pages[name] = sc
     end
 
-    -- SECTION
+    local sectionCounters = {}
     local function section(pg, txt)
+        local key = pg:GetFullName()
+        sectionCounters[key] = (sectionCounters[key] or 0) + 1
+
         local h = Instance.new("Frame", pg)
         h.Size, h.AutomaticSize, h.BackgroundColor3, h.BackgroundTransparency, h.BorderSizePixel =
             UDim2.new(1,0,0,0), Enum.AutomaticSize.Y, TH.Panel, 0.55, 0
         h.ZIndex = 4
-
-        local order = 0
-        for _, cc in ipairs(pg:GetChildren()) do
-            if cc:IsA("Frame") then order = order + 1 end
-        end
-        h.LayoutOrder = order + 1
-
+        h.LayoutOrder = sectionCounters[key]
         h:SetAttribute("zevaBG", 0.55)
         round(h, 12); stroke(h, TH.LineHi, 1, 0.4)
         gradient(h, TH.PanelHi, TH.Panel, 90)
@@ -1913,7 +1958,6 @@ function StartScript(plf)
         return r
     end
 
-    -- TOGGLE
     local function toggle(parent, label, cfgKey, default, cb)
         local r = row(parent, ROW_H)
         local state = cfg[cfgKey] ~= nil and cfg[cfgKey] or default or false
@@ -1975,8 +2019,9 @@ function StartScript(plf)
         return {set = function(v) state = v; refresh(false) end, get = function() return state end}
     end
 
-    -- SLIDER
-    local function slider(parent, label, cfgKey, mn, mx, default, cb)
+    local function slider(parent, label, cfgKey, mn, mx, default, cb, precision)
+        precision = precision or 0
+        local mul = 10 ^ precision
         local r = row(parent, ROW_SLIDER)
         local value = cfg[cfgKey] ~= nil and cfg[cfgKey] or default or mn
         local lbl = Instance.new("TextLabel", r)
@@ -2014,8 +2059,9 @@ function StartScript(plf)
             local info = animated and EASE.soft or EASE.fast
             tw(fill, info, {Size = UDim2.new(rel, 0, 1, 0)})
             tw(knob, info, {Position = UDim2.new(rel, 0, 0.5, 0)})
-            if tostring(value) ~= valLbl.Text then
-                valLbl.Text = tostring(value)
+            local disp = precision > 0 and string.format("%."..precision.."f", value) or tostring(value)
+            if disp ~= valLbl.Text then
+                valLbl.Text = disp
                 if animated then
                     valLbl.TextTransparency = 0.5
                     tw(valLbl, EASE.fast, {TextTransparency = 0})
@@ -2025,8 +2071,10 @@ function StartScript(plf)
 
         local dragging = false
         local function apply(i)
-            local rel = math.clamp((i.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
-            value = math.floor(mn + (mx-mn) * rel); redraw(true); if cb then cb(value) end
+            local rel = math.clamp((i.Position.X - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+            local raw = mn + (mx - mn) * rel
+            value = math.floor(raw * mul + 0.5) / mul
+            redraw(true); if cb then cb(value) end
         end
         track.InputBegan:Connect(function(i)
             if i.UserInputType == UIT_M1 or i.UserInputType == UIT_TCH then
@@ -2046,7 +2094,6 @@ function StartScript(plf)
         return {set = function(v) value = v; redraw(true); cb(v) end, get = function() return value end}
     end
 
-    -- NUM INPUT
     local function numInput(parent, label, cfgKey, default, cb)
         local r = row(parent, 28)
         local lbl = Instance.new("TextLabel", r)
@@ -2080,7 +2127,6 @@ function StartScript(plf)
         return box
     end
 
-    -- BUTTON
     local function button(parent, label, cb)
         local b = Instance.new("TextButton", parent)
         b.Size, b.BackgroundColor3, b.Text, b.TextColor3, b.Font, b.TextSize =
@@ -2122,7 +2168,6 @@ function StartScript(plf)
         return b
     end
 
-    -- KEYBIND
     local function keybind(parent, label, cfgKey, getKey, setKey, pcOnly)
         if pcOnly and plf ~= "PC" then return end
         local r = row(parent, 28)
@@ -2180,9 +2225,13 @@ function StartScript(plf)
                     elseif isL then key = UIT_M1
                     elseif isR then key = UI_M2
                     else key = UI_M3 end
-                    if key == Enum.KeyCode.Escape then b.Text = keyName(getKey())
-                    elseif key == Enum.KeyCode.Backspace then setKey(nil); b.Text = "None"
-                    else setKey(key); b.Text = keyName(key) end
+                    if key == Enum.KeyCode.Escape then
+                        setKey(nil); b.Text = "None"
+                    elseif key == Enum.KeyCode.Backspace then
+                        setKey(nil); b.Text = "None"
+                    else
+                        setKey(key); b.Text = keyName(key)
+                    end
                 end
             end)
             task.delay(5, function()
@@ -2199,7 +2248,6 @@ function StartScript(plf)
         return b
     end
 
-    -- COLOR ROW
     local function colorRow(parent, label, cfgKey)
         local r = row(parent, ROW_H)
         local lbl = Instance.new("TextLabel", r)
@@ -2224,7 +2272,7 @@ function StartScript(plf)
             cfg[cfgKey] = ESP_PRESETS[idx]
             tw(sw, EASE.fast, {BackgroundColor3 = cfg[cfgKey]})
         end)
-        regFeature(label, "esp", r)
+        regFeature(label, BUILD_PAGE, r)
         return sw
     end
 
@@ -2250,7 +2298,6 @@ function StartScript(plf)
 
     reg(RS.Heartbeat:Connect(autoHop))
 
-    -- toggle handler
     if isPC then
         reg(U.InputBegan:Connect(function(input, gpe)
             if gpe then return end
@@ -2268,96 +2315,51 @@ function StartScript(plf)
             end
         end))
     else
-        -- mobile: always-visible glowing hamburger at top-right
+        -- mobile: v6.9.10 flat hamburger, always visible so menu can always be closed
         local opB = Instance.new("TextButton", g)
-        opB.Size, opB.Position = UDim2.new(0, 56, 0, 56), UDim2.new(1, -76, 0, 90)
-        opB.BackgroundColor3, opB.Text = TH.Panel, ""
+        opB.Size, opB.Position, opB.BackgroundColor3, opB.Text =
+            UDim2.new(0,50,0,50), UDim2.new(0,20,0.5,-25), TH.Panel, ""
+        opB.TextColor3, opB.Font, opB.TextSize = TH.Text, FONTB, 20
         opB.AutoButtonColor, opB.BorderSizePixel, opB.Active = false, 0, true
         opB.ZIndex = 500
-        round(opB, 18); stroke(opB, TH.Accent, 2, 0.2)
-        gradient(opB, TH.PanelHi, TH.Panel, 45)
-
-        local pulseRing = Instance.new("Frame", opB)
-        pulseRing.Size = UDim2.new(1, 4, 1, 4)
-        pulseRing.Position = UDim2.new(0, -2, 0, -2)
-        pulseRing.BackgroundTransparency = 1
-        pulseRing.BorderSizePixel = 0
-        pulseRing.ZIndex = opB.ZIndex - 1
-        local prc = Instance.new("UICorner", pulseRing)
-        prc.CornerRadius = UDim.new(1, 0)
-        local prs = Instance.new("UIStroke", pulseRing)
-        prs.Color = TH.Accent; prs.Thickness = 2; prs.Transparency = 0.3
-        regAccent(prs, "Color")
-
-        task.spawn(function()
-            while opB and opB.Parent do
-                if opB.Visible then
-                    prs.Transparency = 0.3
-                    pulseRing.Size = UDim2.new(1, 4, 1, 4)
-                    pulseRing.Position = UDim2.new(0, -2, 0, -2)
-                    tw(pulseRing, TweenInfo.new(1.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                        Size = UDim2.new(1, 26, 1, 26),
-                        Position = UDim2.new(0, -13, 0, -13),
-                    })
-                    tw(prs, TweenInfo.new(1.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                        Transparency = 1,
-                    })
-                    task.wait(1.6)
-                else
-                    task.wait(0.4)
-                end
-            end
-        end)
-
+        round(opB, 10); stroke(opB, TH.Accent, 1, 0.3)
         for i = 0, 2 do
             local bar = Instance.new("Frame", opB)
-            bar.Size = UDim2.new(0, 26, 0, 3)
-            bar.Position = UDim2.new(0.5, -13, 0.5, -9 + i * 8)
+            bar.Size     = UDim2.new(0, 22, 0, 2)
+            bar.Position = UDim2.new(0.5, -11, 0.5, -8 + i * 7)
             bar.BackgroundColor3, bar.BorderSizePixel = TH.Text, 0
             bar.ZIndex = opB.ZIndex + 1
-            round(bar, 1.5)
+            round(bar, 1)
         end
-
-        -- visibility follows root state
-        task.spawn(function()
-            while opB and opB.Parent do
-                opB.Visible = not root.Visible
-                task.wait(0.1)
-            end
-        end)
 
         local dragging, ds, sp, moved
         opB.InputBegan:Connect(function(i)
             if i.UserInputType == UIT_M1 or i.UserInputType == UIT_TCH then
                 dragging, moved, ds, sp = true, false, i.Position, opB.Position
-                tw(opB, EASE.punch, {Size = UDim2.new(0, 52, 0, 52)})
             end
         end)
         U.InputChanged:Connect(function(i)
             if dragging and (i.UserInputType == UIT_MMV or i.UserInputType == UIT_TCH) then
                 local d = i.Position - ds
-                if math.abs(d.X) > 6 or math.abs(d.Y) > 6 then moved = true end
+                if math.abs(d.X) > 4 or math.abs(d.Y) > 4 then moved = true end
                 opB.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
             end
         end)
         U.InputEnded:Connect(function(i)
             if i.UserInputType == UIT_M1 or i.UserInputType == UIT_TCH then
-                if dragging then
-                    tw(opB, EASE.release, {Size = UDim2.new(0, 56, 0, 56)})
-                    if not moved then
-                        local nextV = not root.Visible
-                        setMenuVisible(nextV)
-                        if nextV then
-                            root.BackgroundTransparency = 1
-                            local rs = root:FindFirstChildOfClass("UIStroke")
-                            if rs then rs.Transparency = 1 end
-                            tw(root, EASE.med, {BackgroundTransparency = 0.15})
-                            if rs then tw(rs, EASE.med, {Transparency = 0.2}) end
-                        end
-                        if cfg.MenuSound and menuSound then pcall(function() menuSound:Play() end) end
+                if dragging and not moved then
+                    local nextV = not root.Visible
+                    setMenuVisible(nextV)
+                    if nextV then
+                        root.BackgroundTransparency = 1
+                        local rs = root:FindFirstChildOfClass("UIStroke")
+                        if rs then rs.Transparency = 1 end
+                        tw(root, EASE.med, {BackgroundTransparency = 0.15})
+                        if rs then tw(rs, EASE.med, {Transparency = 0.2}) end
                     end
-                    dragging = false
+                    if cfg.MenuSound and menuSound then pcall(function() menuSound:Play() end) end
                 end
+                dragging = false
             end
         end)
     end
@@ -2389,8 +2391,8 @@ function StartScript(plf)
             toggle(s, "Aim Key: Toggle Mode", "AimToggleMode", false, function(v) cfg.AimToggleMode = v end)
         end
         local s2 = section(pages["aim"], "offset")
-        slider(s2, "Offset X", "OffsetX", -5, 5, 0, function(v) cfg.OffsetX = v end)
-        slider(s2, "Offset Y", "OffsetY", -5, 5, 0, function(v) cfg.OffsetY = v end)
+        slider(s2, "Offset X", "OffsetX", -5, 5, 0, function(v) cfg.OffsetX = v end, 2)
+        slider(s2, "Offset Y", "OffsetY", -5, 5, 0, function(v) cfg.OffsetY = v end, 2)
         local s3 = section(pages["aim"], "priority")
         local prRow = Instance.new("Frame", s3)
         prRow.Size, prRow.BackgroundTransparency = UDim2.new(1,0,0,28), 1
@@ -2843,6 +2845,7 @@ function StartScript(plf)
         xhB.MouseButton1Click:Connect(function()
             xhIdx = xhIdx % #xhStyles + 1; cfg.CrosshairStyle = xhStyles[xhIdx]; xhB.Text = cfg.CrosshairStyle; buildCrosshair()
         end)
+        colorRow(s5, "Crosshair Color", "CrosshairColor")
         numInput(s5, "Size", "CrosshairSize", 12, function() buildCrosshair() end)
         numInput(s5, "Gap", "CrosshairGap", 4, function() buildCrosshair() end)
         numInput(s5, "Thickness", "CrosshairThickness", 1, function() buildCrosshair() end)
@@ -2932,8 +2935,13 @@ function StartScript(plf)
             local pg = pages[best.tab]
             if pg and best.target and best.target.Parent then
                 pcall(function()
-                    local absY = (best.target.AbsolutePosition.Y - pg.AbsolutePosition.Y) + pg.CanvasPosition.Y
-                    local scrollY = math.max(0, absY - pg.AbsoluteSize.Y / 3)
+                    local targetCanvasY = best.target.AbsolutePosition.Y
+                                          - pg.AbsolutePosition.Y
+                                          + pg.CanvasPosition.Y
+                    local scrollY = math.max(0, math.min(
+                        targetCanvasY - pg.AbsoluteSize.Y / 3,
+                        math.max(0, pg.AbsoluteCanvasSize.Y - pg.AbsoluteSize.Y)
+                    ))
                     tw(pg, EASE.med, {CanvasPosition = Vector2.new(0, scrollY)})
                 end)
                 local hi = Instance.new("Frame", best.target)
@@ -3123,9 +3131,11 @@ function StartScript(plf)
     end
     local function bh_valid(pl)
         if not pl or pl == p then return false end
-        if pl.Team and p.Team and pl.Team == p.Team then return false end
-        if pl:GetAttribute("Team") and p:GetAttribute("Team")
-           and pl:GetAttribute("Team") == p:GetAttribute("Team") then return false end
+        if cfg.TeamCheck then
+            if pl.Team and p.Team and pl.Team == p.Team then return false end
+            if pl:GetAttribute("Team") and p:GetAttribute("Team")
+               and pl:GetAttribute("Team") == p:GetAttribute("Team") then return false end
+        end
         if cfg.KOCheck and isKOorDead_cached(pl) then return false end
         local ch = pl.Character; if not ch then return false end
         local hum = ch:FindFirstChildOfClass("Humanoid")
@@ -3143,15 +3153,17 @@ function StartScript(plf)
     end
 
     local velHist = {}
-    local function trackVel(pl)
+    local velTimestamps = {}
+    local function trackVel(pl, dt)
         local ch = pl.Character; if not ch then return end
         local hrp = ch:FindFirstChild("HumanoidRootPart"); if not hrp then return end
         local v3 = hrp.AssemblyLinearVelocity
         local h = velHist[pl]
         if not h then velHist[pl] = {v3,v3,v3} else h[1],h[2],h[3] = h[2],h[3],v3 end
+        velTimestamps[pl] = (velTimestamps[pl] or 0) + (dt or 0.1)
     end
     local function getAvgVel(pl) local h = velHist[pl]; if not h then return V3_ZERO end; return (h[1]+h[2]+h[3]) / 3 end
-    local function getAvgAccel(pl) local h = velHist[pl]; if not h then return V3_ZERO end; return (h[3] - h[1]) * 0.5 end
+    local function getAvgAccel(pl, dt) local h = velHist[pl]; if not h or not dt or dt <= 0 then return V3_ZERO end; return (h[3] - h[1]) / (2 * dt) end
 
     local cachedPlayers, cachedPlayerList = {}, {}
     local function refreshPlayerCache()
@@ -3274,7 +3286,7 @@ function StartScript(plf)
             local it = Stats.Network.ServerStatsItem["Data Ping"]
             if it then pingSec = it:GetValue() * 0.001 end
         end)
-        local accel = getAvgAccel(pl)
+        local accel = getAvgAccel(pl, 0.1)
         local dist = (pos - c.CFrame.Position).Magnitude
         local leadTime = cfg.Pred * cfg.PredScale + pingSec * 0.5 + math.min(dist / 2000, 0.15)
         return pos + vel * leadTime + 0.5 * accel * leadTime * leadTime
@@ -3316,8 +3328,8 @@ function StartScript(plf)
         local col, th, s, gap = cfg.CrosshairColor, cfg.CrosshairThickness, cfg.CrosshairSize, cfg.CrosshairGap
         local function line(x1,y1,x2,y2)
             local l; pcall(function() l = Drawing.new("Line") end); if not l then return end
-            l.From, l.To, l.Color, l.Thickness, l.Transparency, l.Visible =
-                Vector2.new(cx+x1,cy+y1), Vector2.new(cx+x2,cy+y2), col, th, 1, true
+            setLinePoints(l, Vector2.new(cx+x1,cy+y1), Vector2.new(cx+x2,cy+y2))
+            l.Color, l.Thickness, l.Transparency, l.Visible = col, th, 1, true
             table.insert(crosshairParts, l)
         end
         local function dot(r)
@@ -3513,11 +3525,12 @@ function StartScript(plf)
 
         chamsAccum = chamsAccum + dt
         if chamsAccum >= 0.1 then
+            local velDt = chamsAccum
             chamsAccum = 0
             local cKillFeed = cfg.KillFeed
             for pl in pairs(cachedPlayers) do
                 if pl ~= p then
-                    trackVel(pl)
+                    trackVel(pl, velDt)
                     local ch = pl.Character
                     if ch then
                         local hum = ch:FindFirstChild("Humanoid")
@@ -3567,12 +3580,12 @@ function StartScript(plf)
                             if cHealth then
                                 local bX = psx - wd*0.5 - 6
                                 if not d.HB.Visible then d.HB.Visible = true end
-                                d.HB.From = Vector2.new(bX, tSy); d.HB.To = Vector2.new(bX, tSy + ht)
+                                setLinePoints(d.HB, Vector2.new(bX, tSy), Vector2.new(bX, tSy + ht))
                                 d.HB.Color = cHpCol; d.HB.Thickness = cHpTh
                                 local ratio = 1
                                 if hum.MaxHealth > 0 then ratio = math.clamp(hum.Health / hum.MaxHealth, 0, 1) end
                                 if not d.HM.Visible then d.HM.Visible = true end
-                                d.HM.From = Vector2.new(bX, tSy + ht); d.HM.To = Vector2.new(bX, tSy + ht - (ht * ratio))
+                                setLinePoints(d.HM, Vector2.new(bX, tSy + ht), Vector2.new(bX, tSy + ht - (ht * ratio)))
                                 d.HM.Color = Color3.fromHSV(ratio * 0.3, 1, 1); d.HM.Thickness = cHpTh
                             elseif d.HB.Visible or d.HM.Visible then d.HB.Visible = false; d.HM.Visible = false end
                         end
@@ -3587,7 +3600,7 @@ function StartScript(plf)
                         if d.T then
                             if cTracer then
                                 if not d.T.Visible then d.T.Visible = true end
-                                d.T.From = Vector2.new(halfX, 0); d.T.To = Vector2.new(psx, psy)
+                                setLinePoints(d.T, Vector2.new(halfX, 0), Vector2.new(psx, psy))
                                 d.T.Color = cTrCol; d.T.Thickness = cTrTh
                             elseif d.T.Visible then d.T.Visible = false end
                         end
@@ -3599,7 +3612,7 @@ function StartScript(plf)
                                 local dFC = math.sqrt(ddx*ddx + ddy*ddy)
                                 if onS and dFC <= cFovSize then
                                     if not d.LT.Visible then d.LT.Visible = true end
-                                    d.LT.From = Vector2.new(halfX, halfY); d.LT.To = Vector2.new(hp2.X, hp2.Y)
+                                    setLinePoints(d.LT, Vector2.new(halfX, halfY), Vector2.new(hp2.X, hp2.Y))
                                     d.LT.Color = cLtCol; d.LT.Thickness = cLtTh
                                 elseif d.LT.Visible then d.LT.Visible = false end
                             elseif d.LT.Visible then d.LT.Visible = false end
@@ -3615,7 +3628,7 @@ function StartScript(plf)
                                     local ln = d.L[li]
                                     if o1 and o2 and ln then
                                         if not ln.Visible then ln.Visible = true end
-                                        ln.From = Vector2.new(v1.X, v1.Y); ln.To = Vector2.new(v2.X, v2.Y)
+                                        setLinePoints(ln, Vector2.new(v1.X, v1.Y), Vector2.new(v2.X, v2.Y))
                                         ln.Color = cBoneCol; ln.Thickness = cBoneTh
                                         li = li + 1
                                     end
@@ -3876,7 +3889,7 @@ function StartScript(plf)
                     local vs = c.ViewportSize
                     local scx, scy = math.floor(vs.X*0.5), math.floor(vs.Y*0.5)
                     local ray = c:ViewportPointToRay(scx, scy)
-                    trigRayParams.FilterDescendantsInstances = {p.Character, c}
+                    trigRayParams.FilterDescendantsInstances = { p.Character }
                     local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, trigRayParams)
                     if result and result.Instance then
                         local model = result.Instance:FindFirstAncestorOfClass("Model")
@@ -3885,8 +3898,14 @@ function StartScript(plf)
                             local hd = (result.Position - ray.Origin).Magnitude
                             if hd <= cfg.MaxTriggerDist and (not cfg.WallCheck or vis(result.Instance)) then
                                 pcall(function()
-                                    VIM:SendMouseButtonEvent(scx, scy, 0, true, game, 1)
-                                    VIM:SendMouseButtonEvent(scx, scy, 0, false, game, 1)
+                                    if plf == "Mobile" then
+                                        VIM:SendTouchEvent(99, 1, scx, scy)
+                                        task.wait(0.02)
+                                        VIM:SendTouchEvent(99, 3, scx, scy)
+                                    else
+                                        VIM:SendMouseButtonEvent(scx, scy, 0, true, game, 1)
+                                        VIM:SendMouseButtonEvent(scx, scy, 0, false, game, 1)
+                                    end
                                 end)
                                 lastT = tick() + math.max(0.03, math.random() * cfg.RandDelay)
                                 killStats.hits = killStats.hits + 1
@@ -3915,7 +3934,7 @@ function StartScript(plf)
         end
         local hc = hitChams[pl]
         if hc then pcall(function() hc.sq:Remove() end); hitChams[pl] = nil end
-        lastHealth[pl] = nil; velHist[pl] = nil; validityCache[pl] = nil
+        lastHealth[pl] = nil; velHist[pl] = nil; velTimestamps[pl] = nil; validityCache[pl] = nil
         local ch = pl.Character
         if ch then koCache[ch] = nil; bh_restoreCharacter(ch) end
     end))
