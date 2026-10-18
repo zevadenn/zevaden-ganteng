@@ -1,10 +1,10 @@
 -- ============================================================
--- Zeva v8.2.0 — patched build (mobile hamburger = v6.9.10 style)
+-- Zeva v8.2.0 — patched build (mobile hamburger + per-feature keybinds)
 -- ============================================================
--- [C] fixes applied:
+-- [C] fixes + additions applied:
 --   PointA/PointB on all Drawing Lines
 --   pcall + type guards on setthreadidentity / getgc / hookfunction / debug.info
---   keybind Escape now unbinds
+--   keybind Escape/Backspace unbind + double-click -> Auto
 --   slider supports precision, round-half-up
 --   getAvgAccel uses real dt
 --   trackVel decoupled from cham throttle
@@ -15,7 +15,9 @@
 --   colorRow respects BUILD_PAGE
 --   performSearch uses canvas-relative math + clamp
 --   bh_valid gated on cfg.TeamCheck
---   mobile opB swapped to v6.9.10 flat hamburger, always-visible (no close-loop bug)
+--   mobile opB = v6.9.10 flat hamburger, always visible
+--   NEW: Aimlock keybind + toggle-mode + double-click Auto (PC only)
+--   NEW: Magic Bullet keybind + toggle-mode + double-click Auto (PC only)
 -- ============================================================
 
 -- ============================================================
@@ -860,7 +862,6 @@ local BONE_PAIRS = {
 }
 local BONE_PAIRS_COUNT = #BONE_PAIRS
 
--- small helper: assign both From/To and PointA/PointB on a Drawing.Line
 local function setLinePoints(l, a, b)
     if not l then return end
     pcall(function() l.PointA = a; l.PointB = b end)
@@ -916,6 +917,7 @@ function StartScript(plf)
         FPSBooster=false, FPSOverlay=false,
         FreeCam=false, FreeCamSpeed=60,
         BigHead=false, BigHeadSizeNum=20,
+        BigHeadKey=nil, BigHeadToggleMode=false, BigHeadHeld=false, BigHeadToggled=false,
         HideName=false, HideInfo=false,
     }
 
@@ -2168,7 +2170,7 @@ function StartScript(plf)
         return b
     end
 
-    local function keybind(parent, label, cfgKey, getKey, setKey, pcOnly)
+    local function keybind(parent, label, cfgKey, getKey, setKey, pcOnly, allowAuto)
         if pcOnly and plf ~= "PC" then return end
         local r = row(parent, 28)
         local lbl = Instance.new("TextLabel", r)
@@ -2184,16 +2186,39 @@ function StartScript(plf)
         b.ZIndex = 8
         round(b, 8); stroke(b, TH.LineHi, 1, 0.4); regAccent(b, "TextColor3")
 
+        local function displayFor(k)
+            if k == nil and allowAuto then return "Auto" end
+            return keyName(k)
+        end
+        b.Text = displayFor(getKey())
+
         local bs = b:FindFirstChildOfClass("UIStroke")
         local listening = false
         local pulseThread = nil
+        local lastClick = 0
         local function stopPulse()
             if pulseThread then pcall(function() task.cancel(pulseThread) end); pulseThread = nil end
             if bs then pcall(function() tw(bs, EASE.fast, {Color = TH.LineHi, Transparency = 0.4}) end) end
         end
 
         b.MouseButton1Click:Connect(function()
-            if listening then return end
+            local now = tick()
+            if allowAuto and lastClick > 0 and now - lastClick < 0.35 then
+                listening = false
+                stopPulse()
+                setKey(nil)
+                b.Text = "Auto"
+                lastClick = 0
+                return
+            end
+            if listening then
+                listening = false
+                stopPulse()
+                b.Text = displayFor(getKey())
+                lastClick = 0
+                return
+            end
+            lastClick = now
             listening = true
             b.Text = "press a key..."
             if bs then
@@ -2220,17 +2245,18 @@ function StartScript(plf)
                     if conn then conn:Disconnect() end
                     listening = false
                     stopPulse()
+                    lastClick = 0
                     local key
                     if isKey then key = input.KeyCode
                     elseif isL then key = UIT_M1
                     elseif isR then key = UI_M2
                     else key = UI_M3 end
                     if key == Enum.KeyCode.Escape then
-                        setKey(nil); b.Text = "None"
+                        setKey(nil); b.Text = displayFor(nil)
                     elseif key == Enum.KeyCode.Backspace then
-                        setKey(nil); b.Text = "None"
+                        setKey(nil); b.Text = displayFor(nil)
                     else
-                        setKey(key); b.Text = keyName(key)
+                        setKey(key); b.Text = displayFor(key)
                     end
                 end
             end)
@@ -2239,11 +2265,12 @@ function StartScript(plf)
                     if conn then conn:Disconnect() end
                     listening = false
                     stopPulse()
-                    b.Text = keyName(getKey())
+                    lastClick = 0
+                    b.Text = displayFor(getKey())
                 end
             end)
         end)
-        regRefresh(cfgKey, function() b.Text = keyName(cfg[cfgKey]) end)
+        regRefresh(cfgKey, function() b.Text = displayFor(cfg[cfgKey]) end)
         regFeature(label, BUILD_PAGE, r)
         return b
     end
@@ -2379,17 +2406,30 @@ function StartScript(plf)
         BUILD_PAGE = "aim"
         local s = section(pages["aim"], "combat")
         toggle(s, "Aimlock", "Aim", false, function(v) cfg.Aim = v end)
-        toggle(s, "Magic Bullet", "BigHead", false, function(v) cfg.BigHead = v; if not v then BH_restoreAll() end end)
+        if plf == "PC" then
+            keybind(s, "Aim Key", "AimKey",
+                function() return cfg.AimKey end,
+                function(k) cfg.AimKey = k; cfg.AimKeyHeld = false; cfg.AimKeyToggled = false end,
+                false, true)
+            toggle(s, "Aim: Toggle Mode", "AimToggleMode", false, function(v) cfg.AimToggleMode = v end)
+        end
+        toggle(s, "Magic Bullet", "BigHead", false, function(v)
+            cfg.BigHead = v
+            if not v then BH_restoreAll() end
+        end)
+        if plf == "PC" then
+            keybind(s, "Magic Bullet Key", "BigHeadKey",
+                function() return cfg.BigHeadKey end,
+                function(k) cfg.BigHeadKey = k; cfg.BigHeadHeld = false; cfg.BigHeadToggled = false end,
+                false, true)
+            toggle(s, "Magic Bullet: Toggle Mode", "BigHeadToggleMode", false, function(v) cfg.BigHeadToggleMode = v end)
+        end
         slider(s, "Bullet Size", "BigHeadSizeNum", 5, 50, 20, function(v) cfg.BigHeadSizeNum = v end)
         toggle(s, "Wallcheck", "WallCheck", false, function(v) cfg.WallCheck = v end)
         toggle(s, "Triggerbot", "Trig", false, function(v) cfg.Trig = v end)
         toggle(s, "Hit Sound", "HitSound", false, function(v) cfg.HitSound = v end)
         toggle(s, "Jitter Aim", "JitterAim", true, function(v) cfg.JitterAim = v end)
         toggle(s, "Auto Predict", "AutoPred", true, function(v) cfg.AutoPred = v end)
-        if plf == "PC" then
-            keybind(s, "Aim Key", "AimKey", function() return cfg.AimKey end, function(k) cfg.AimKey = k; cfg.AimKeyHeld = false; cfg.AimKeyToggled = false end, false)
-            toggle(s, "Aim Key: Toggle Mode", "AimToggleMode", false, function(v) cfg.AimToggleMode = v end)
-        end
         local s2 = section(pages["aim"], "offset")
         slider(s2, "Offset X", "OffsetX", -5, 5, 0, function(v) cfg.OffsetX = v end, 2)
         slider(s2, "Offset Y", "OffsetY", -5, 5, 0, function(v) cfg.OffsetY = v end, 2)
@@ -2745,6 +2785,7 @@ function StartScript(plf)
             cfg.SelectedParts = {["Head"]=true}
             cfg.TargetList = {}
             cfg.BigHead=false; cfg.BigHeadSizeNum=20
+            cfg.BigHeadKey=nil; cfg.BigHeadToggleMode=false; cfg.BigHeadHeld=false; cfg.BigHeadToggled=false
             cfg.AutoBhop=false
             cfg.Smth=0.35; cfg.Pred=0.12; cfg.PredScale=1.0
             cfg.FovShape="Circle"; cfg.AimPriority="Crosshair"; cfg.SmoothCurve="Linear"
@@ -2786,10 +2827,16 @@ function StartScript(plf)
                 cfg.HideKey = k
                 setHintKey(k)
             end, false)
-            keybind(s3, "Aim Key", "AimKey", function() return cfg.AimKey end, function(k)
-                cfg.AimKey = k; cfg.AimKeyHeld = false; cfg.AimKeyToggled = false
-            end, false)
-            toggle(s3, "Aim Key: Toggle Mode", "AimToggleMode", false, function(v) cfg.AimToggleMode = v end)
+            keybind(s3, "Aim Key", "AimKey",
+                function() return cfg.AimKey end,
+                function(k) cfg.AimKey = k; cfg.AimKeyHeld = false; cfg.AimKeyToggled = false end,
+                false, true)
+            keybind(s3, "Magic Bullet Key", "BigHeadKey",
+                function() return cfg.BigHeadKey end,
+                function(k) cfg.BigHeadKey = k; cfg.BigHeadHeld = false; cfg.BigHeadToggled = false end,
+                false, true)
+            toggle(s3, "Aim: Toggle Mode", "AimToggleMode", false, function(v) cfg.AimToggleMode = v end)
+            toggle(s3, "Magic Bullet: Toggle Mode", "BigHeadToggleMode", false, function(v) cfg.BigHeadToggleMode = v end)
         else
             local note = Instance.new("TextLabel", s3)
             note.Size, note.BackgroundTransparency, note.Text, note.TextColor3, note.Font, note.TextSize =
@@ -3005,6 +3052,35 @@ function StartScript(plf)
             if not cfg.AimToggleMode and inputMatchesAimKey(input) then cfg.AimKeyHeld = false end
         end))
     end
+
+    -- MAGIC BULLET KEY
+    local function inputMatchesBigHeadKey(input)
+        if cfg.BigHeadKey == nil then return false end
+        if typeof(cfg.BigHeadKey) == "EnumItem" then
+            if cfg.BigHeadKey.EnumType == Enum.KeyCode then return input.KeyCode == cfg.BigHeadKey
+            elseif cfg.BigHeadKey.EnumType == Enum.UserInputType then return input.UserInputType == cfg.BigHeadKey end
+        end
+        return false
+    end
+    if isPC then
+        reg(U.InputBegan:Connect(function(input, gpe)
+            if gpe then return end
+            if inputMatchesBigHeadKey(input) then
+                if cfg.BigHeadToggleMode then
+                    cfg.BigHeadToggled = not cfg.BigHeadToggled
+                    cfg.BigHeadHeld = cfg.BigHeadToggled
+                else
+                    cfg.BigHeadHeld = true
+                end
+            end
+        end))
+        reg(U.InputEnded:Connect(function(input)
+            if not cfg.BigHeadToggleMode and inputMatchesBigHeadKey(input) then
+                cfg.BigHeadHeld = false
+            end
+        end))
+    end
+
     reg(U.InputBegan:Connect(function(input, gpe)
         if gpe or not cfg.FreeCam then return end
         local k = input.KeyCode
@@ -3367,9 +3443,13 @@ function StartScript(plf)
     end
     local function pushKillFeed(pl) table.insert(killFeed, {name = pl.DisplayName, born = tick()}) end
 
-    -- MAGIC BULLET LOOP
+    -- MAGIC BULLET LOOP (honors BigHeadKey hold/toggle on PC; Auto mode when nil)
     reg(RS.Stepped:Connect(function()
-        if not cfg.BigHead then
+        local active = cfg.BigHead
+        if isPC and cfg.BigHeadKey ~= nil and not cfg.BigHeadHeld then
+            active = false
+        end
+        if not active then
             if next(bhCache) then BH_restoreAll() end
             return
         end
